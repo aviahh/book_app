@@ -54,12 +54,13 @@ export async function mountSettings(view, _p, nav) {
       <h2>Language</h2>
       <div class="set-group">
         ${row('Translate words into', 'Double-tap any word while reading.', select('translateTo', LANGUAGES))}
+        ${row('Voice', 'Microsoft is the natural voice from EZ_shortcut (Jenny in English, Hila in Hebrew).', seg('speechVoice', [['microsoft', 'Microsoft'], ['google', 'Google']]))}
         ${row('Read-aloud language', 'Auto detects from the text itself.', select('speechLang', [['auto', 'Automatic'], ...LANGUAGES]))}
       </div>
 
       <h2>About</h2>
       <div class="set-group">
-        ${row('Folio', 'Books stay on this device. Translation and read-aloud use Google services and need an internet connection.', '')}
+        ${row('Folio', 'Books stay on this device. Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
         ${storage ? row('Storage', storage, '') : ''}
         ${row('Reset preferences', '', '<button class="btn subtle" data-act="reset">Reset</button>')}
       </div>

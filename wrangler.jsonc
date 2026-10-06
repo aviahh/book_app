@@ -1,12 +1,16 @@
-// Cloudflare deployment: serve the built app (dist/) as static files.
+// Cloudflare deployment: serve the built app (dist/) as static files, plus a
+// small Worker (worker/index.js) that relays the Microsoft neural voices at /api/tts.
 // "name" must match the project name in the Cloudflare dashboard.
 {
   "name": "folio-r7k2xq9m",
+  "main": "worker/index.js",
   "compatibility_date": "2026-09-01",
   "assets": {
     "directory": "./dist",
     // Serve index.html as-is (no redirect to "/"); the offline service worker precaches it by name.
     "html_handling": "none",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // Only /api/* reaches the Worker; everything else is plain static files.
+    "run_worker_first": ["/api/*"]
   }
 }

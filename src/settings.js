@@ -16,6 +16,7 @@ export const DEFAULTS = {
   theme: 'auto', // 'auto' (follow the device) | 'light' | 'dark'
   translateTo: 'iw',
   speechLang: 'auto',
+  speechVoice: 'microsoft', // 'microsoft' (natural voices, as in EZ_shortcut) | 'google'
 };
 
 let current = load();

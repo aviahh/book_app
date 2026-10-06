@@ -1,4 +1,4 @@
-// Google Translate (text + speech) via the free, key-less endpoints — the same
+// Google Translate (text + speech) and Microsoft neural voices, via free, key-less endpoints — the same
 // services the EZ_shortcut project uses (translate.py / gTTS), called directly
 // from the browser.
 //
@@ -92,15 +92,45 @@ function parse(data) {
 
 // ---------------------------------------------------------------- speech
 
-const MAX_CHUNK = 190;
+// Voices: Microsoft's neural voices (the ones EZ_shortcut uses), relayed by
+// the app's own Cloudflare Worker at /api/tts. Google's voice is the fallback
+// (and the only option on the local dev server), then the device's own voice.
 
-/** Split text into ≤190-char pieces at sentence, then clause, then word breaks. */
-export function chunkText(text) {
+/** Microsoft neural voice per language — Jenny and Hila match EZ_shortcut. */
+export const EDGE_VOICES = {
+  en: 'en-US-JennyNeural',
+  iw: 'he-IL-HilaNeural',
+  ar: 'ar-SA-ZariyahNeural',
+  ru: 'ru-RU-SvetlanaNeural',
+  fr: 'fr-FR-DeniseNeural',
+  es: 'es-ES-ElviraNeural',
+  de: 'de-DE-KatjaNeural',
+  it: 'it-IT-ElsaNeural',
+  pt: 'pt-BR-FranciscaNeural',
+  nl: 'nl-NL-FennaNeural',
+  pl: 'pl-PL-ZofiaNeural',
+  uk: 'uk-UA-PolinaNeural',
+  tr: 'tr-TR-EmelNeural',
+  el: 'el-GR-AthinaNeural',
+  hi: 'hi-IN-SwaraNeural',
+  ja: 'ja-JP-NanamiNeural',
+  ko: 'ko-KR-SunHiNeural',
+  'zh-CN': 'zh-CN-XiaoxiaoNeural',
+};
+
+const LIMITS = { edge: 1200, google: 190 };
+
+/**
+ * Split text into pieces of at most `max` chars at sentence, then clause, then
+ * word breaks. `firstMax` keeps the opening piece short so playback starts fast.
+ */
+export function chunkText(text, max = LIMITS.google, firstMax = max) {
   const clean = text.replace(/\s+/g, ' ').trim();
   const chunks = [];
   let rest = clean;
-  while (rest.length > MAX_CHUNK) {
-    const window = rest.slice(0, MAX_CHUNK + 1);
+  let limit = firstMax;
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit + 1);
     let cut = -1;
     for (const re of [/[.!?…]["'”’)]?\s/g, /[,;:—–]\s/g, /\s/g]) {
       let m;
@@ -108,9 +138,10 @@ export function chunkText(text) {
       while ((m = re.exec(window))) if (m.index > 40) cut = m.index + m[0].length;
       if (cut > 0) break;
     }
-    if (cut <= 0) cut = MAX_CHUNK;
+    if (cut <= 0) cut = limit;
     chunks.push(rest.slice(0, cut).trim());
     rest = rest.slice(cut).trim();
+    limit = max;
   }
   if (rest) chunks.push(rest);
   return chunks;
@@ -119,13 +150,26 @@ export function chunkText(text) {
 export const ttsUrl = (text, lang) =>
   `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${encodeURIComponent(lang)}&total=1&idx=0&textlen=${text.length}&q=${encodeURIComponent(text)}`;
 
+const edgeUrl = (text, voice) => `${new URL('api/tts', document.baseURI).href}?v=${encodeURIComponent(voice)}&t=${encodeURIComponent(text)}`;
+
+/** Providers to try, best first, for a language and the user's voice preference. */
+function providersFor(lang, prefer) {
+  const list = [];
+  if (prefer !== 'google' && EDGE_VOICES[lang]) list.push('edge');
+  list.push('google');
+  return list;
+}
+
+const urlFor = (provider, text, lang) => (provider === 'edge' ? edgeUrl(text, EDGE_VOICES[lang]) : ttsUrl(text, lang));
+
 /**
  * A pausable, chunk-streaming speech player.
  * Must be started from inside a user gesture (iOS autoplay rules).
  */
 export class Speech {
-  constructor({ onState } = {}) {
+  constructor({ onState, voice = () => 'microsoft' } = {}) {
     this.onState = onState || (() => {});
+    this.voicePref = voice;
     // Two elements: one plays while the other preloads the next chunk.
     this.players = [new Audio(), new Audio()];
     for (const a of this.players) {
@@ -142,30 +186,37 @@ export class Speech {
 
   speak(text, lang) {
     this.stop(true);
-    this.chunks = chunkText(text);
-    if (!this.chunks.length) return;
     this.lang = lang;
-    this.index = 0;
-    this.cur = 0;
+    this.providers = providersFor(lang, this.voicePref());
     this.usingFallback = false;
-    const [a, b] = this.players;
-    a.src = ttsUrl(this.chunks[0], lang);
-    if (this.chunks[1]) {
-      b.src = ttsUrl(this.chunks[1], lang);
-      b.load();
-    }
+    const b = this.players[1];
     // Unlock the second element during the gesture so it can start later.
     b.muted = true;
     b.play()
       .then(() => {
         b.pause();
-        b.currentTime = 0;
         b.muted = false;
       })
       .catch(() => (b.muted = false));
+    this.#start(text);
+  }
+
+  /** (Re)start playback of `text` with the current best provider. */
+  #start(text) {
+    this.provider = this.providers[0];
+    this.chunks = chunkText(text, LIMITS[this.provider], Math.min(LIMITS[this.provider], 160));
+    if (!this.chunks.length) return this.#set('idle', true);
+    this.index = 0;
+    this.cur = 0;
+    const [a, b] = this.players;
+    a.src = urlFor(this.provider, this.chunks[0], this.lang);
+    if (this.chunks[1]) {
+      b.src = urlFor(this.provider, this.chunks[1], this.lang);
+      b.load();
+    }
     this.#set('loading');
     a.play()
-      .then(() => this.#set('playing'))
+      .then(() => this.state === 'loading' && this.#set('playing'))
       .catch(() => this.#onError());
   }
 
@@ -187,6 +238,8 @@ export class Speech {
   }
 
   stop(silent = false) {
+    const wasActive = this.state !== 'idle';
+    this.state = 'idle'; // first, so resetting the players can't trigger fallbacks
     for (const a of this.players) {
       a.pause();
       a.removeAttribute('src');
@@ -194,8 +247,7 @@ export class Speech {
     }
     if (this.usingFallback) speechSynthesis.cancel();
     this.usingFallback = false;
-    if (!silent && this.state !== 'idle') this.#set('idle');
-    else this.state = 'idle';
+    if (!silent && wasActive) this.#set('idle');
   }
 
   #advance() {
@@ -209,18 +261,21 @@ export class Speech {
     const nextIdx = this.index + 1;
     if (nextIdx < this.chunks.length) {
       const spare = this.players[1 - this.cur];
-      spare.src = ttsUrl(this.chunks[nextIdx], this.lang);
+      spare.src = urlFor(this.provider, this.chunks[nextIdx], this.lang);
       spare.load();
     }
   }
 
-  // Google unreachable (offline / blocked): fall back to the device voice.
+  // A voice service failed: continue from the current piece with the next
+  // provider (Microsoft → Google), and finally the device's own voice.
   #onError() {
     if (this.state === 'idle' || this.usingFallback) return;
-    if (!('speechSynthesis' in window)) return this.#set('idle', true);
-    for (const a of this.players) a.pause();
-    this.usingFallback = true;
     const rest = this.chunks.slice(this.index).join(' ');
+    for (const a of this.players) a.pause();
+    this.providers = this.providers.slice(1);
+    if (this.providers.length) return this.#start(rest);
+    if (!('speechSynthesis' in window)) return this.#set('idle', true);
+    this.usingFallback = true;
     const u = new SpeechSynthesisUtterance(rest);
     u.lang = this.lang === 'iw' ? 'he-IL' : this.lang;
     u.onend = () => this.usingFallback && this.#set('idle', true);
@@ -236,16 +291,24 @@ export class Speech {
   }
 }
 
-/** One-shot pronunciation of a single word. */
+/** One-shot pronunciation of a single word, with the same voice fallbacks. */
 let wordAudio;
-export function pronounce(word, lang) {
+export function pronounce(word, lang, prefer = 'microsoft') {
   wordAudio ??= new Audio();
-  wordAudio.src = ttsUrl(word, lang);
-  wordAudio.play().catch(() => {
-    if ('speechSynthesis' in window) {
-      const u = new SpeechSynthesisUtterance(word);
-      u.lang = lang === 'iw' ? 'he-IL' : lang;
-      speechSynthesis.speak(u);
+  const providers = providersFor(lang, prefer);
+  const tryNext = () => {
+    const p = providers.shift();
+    if (!p) {
+      if ('speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance(word);
+        u.lang = lang === 'iw' ? 'he-IL' : lang;
+        speechSynthesis.speak(u);
+      }
+      return;
     }
-  });
+    wordAudio.onerror = tryNext;
+    wordAudio.src = urlFor(p, word, lang);
+    wordAudio.play().catch(() => {});
+  };
+  tryNext();
 }

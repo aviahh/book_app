@@ -74,7 +74,7 @@ class Reader {
     this.pointers = new Map();
     this.stripPages = new Map();
     this.cleanups = [];
-    this.speech = new Speech({ onState: (s) => this.#onSpeechState(s) });
+    this.speech = new Speech({ onState: (s) => this.#onSpeechState(s), voice: () => this.settings.speechVoice });
     this.#build();
     this.camera = new Camera(this.cameraEl, () => this.#onCamera());
     this.lock = new OrientationLock(this.el, () => this.#layout());
@@ -708,7 +708,7 @@ class Reader {
       case 'ttsStop':
         return this.speech.stop();
       case 'popSpeak':
-        return pronounce(this.popWord.text, this.popWord.lang);
+        return pronounce(this.popWord.text, this.popWord.lang, this.settings.speechVoice);
       case 'popCopy':
         navigator.clipboard?.writeText(this.popWord.text).then(() => this.#toast('Copied'));
         return;

@@ -10,3 +10,4 @@ reference/
 # local tooling
 .claude/
 *.log
+.wrangler/
