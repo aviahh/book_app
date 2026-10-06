@@ -291,24 +291,16 @@ export class Speech {
   }
 }
 
-/** One-shot pronunciation of a single word, with the same voice fallbacks. */
+/** One-shot pronunciation of a single word (Google voice; device voice if offline). */
 let wordAudio;
-export function pronounce(word, lang, prefer = 'microsoft') {
+export function pronounce(word, lang) {
   wordAudio ??= new Audio();
-  const providers = providersFor(lang, prefer);
-  const tryNext = () => {
-    const p = providers.shift();
-    if (!p) {
-      if ('speechSynthesis' in window) {
-        const u = new SpeechSynthesisUtterance(word);
-        u.lang = lang === 'iw' ? 'he-IL' : lang;
-        speechSynthesis.speak(u);
-      }
-      return;
+  wordAudio.src = ttsUrl(word, lang);
+  wordAudio.play().catch(() => {
+    if ('speechSynthesis' in window) {
+      const u = new SpeechSynthesisUtterance(word);
+      u.lang = lang === 'iw' ? 'he-IL' : lang;
+      speechSynthesis.speak(u);
     }
-    wordAudio.onerror = tryNext;
-    wordAudio.src = urlFor(p, word, lang);
-    wordAudio.play().catch(() => {});
-  };
-  tryNext();
+  });
 }

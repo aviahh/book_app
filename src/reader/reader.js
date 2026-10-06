@@ -708,7 +708,7 @@ class Reader {
       case 'ttsStop':
         return this.speech.stop();
       case 'popSpeak':
-        return pronounce(this.popWord.text, this.popWord.lang, this.settings.speechVoice);
+        return pronounce(this.popWord.text, this.popWord.lang);
       case 'popCopy':
         navigator.clipboard?.writeText(this.popWord.text).then(() => this.#toast('Copied'));
         return;

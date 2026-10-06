@@ -54,7 +54,7 @@ export async function mountSettings(view, _p, nav) {
       <h2>Language</h2>
       <div class="set-group">
         ${row('Translate words into', 'Double-tap any word while reading.', select('translateTo', LANGUAGES))}
-        ${row('Voice', 'Microsoft is the natural voice from EZ_shortcut (Jenny in English, Hila in Hebrew).', seg('speechVoice', [['microsoft', 'Microsoft'], ['google', 'Google']]))}
+        ${row('Voice', 'For reading passages aloud. Microsoft is the natural voice from EZ_shortcut (Jenny in English, Hila in Hebrew).', seg('speechVoice', [['microsoft', 'Microsoft'], ['google', 'Google']]))}
         ${row('Read-aloud language', 'Auto detects from the text itself.', select('speechLang', [['auto', 'Automatic'], ...LANGUAGES]))}
       </div>
 
