@@ -1,0 +1,10 @@
+// Cloudflare deployment: serve the built app (dist/) as static files.
+// "name" must match the project name in the Cloudflare dashboard.
+{
+  "name": "folio-r7k2xq9m",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
