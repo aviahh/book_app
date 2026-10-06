@@ -1,0 +1,12 @@
+# dependencies & build output (recreated by npm install / npm run build)
+node_modules/
+dist/
+dev-dist/
+public/pdfjs/
+
+# design reference screenshots (third-party copyrighted material)
+reference/
+
+# local tooling
+.claude/
+*.log

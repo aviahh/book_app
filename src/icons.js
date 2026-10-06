@@ -1,0 +1,35 @@
+// Inline SVG icons (stroke-based, 24px grid, inherit currentColor).
+const svg = (body, extra = '') =>
+  `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
+
+export const icons = {
+  thumbs: svg('<rect x="4" y="4" width="7" height="7" rx="1.2"/><rect x="13" y="4" width="7" height="7" rx="1.2"/><rect x="4" y="13" width="7" height="7" rx="1.2"/><rect x="13" y="13" width="7" height="7" rx="1.2"/>'),
+  first: svg('<path d="M5 5v14"/><path d="M19 12H9"/><path d="M13 7l-5 5 5 5"/>'),
+  last: svg('<path d="M19 5v14"/><path d="M5 12h10"/><path d="M11 7l5 5-5 5"/>'),
+  prev: svg('<path d="M19 12H6"/><path d="M11 7l-5 5 5 5"/>'),
+  next: svg('<path d="M5 12h13"/><path d="M13 7l5 5-5 5"/>'),
+  jumpBack: svg('<path d="M12 7l-5 5 5 5"/><path d="M18 7l-5 5 5 5"/>'),
+  jumpFwd: svg('<path d="M6 7l5 5-5 5"/><path d="M12 7l5 5-5 5"/>'),
+  speaker: svg('<path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z"/><path d="M15.5 9a4 4 0 010 6"/><path d="M18 6.5a7.5 7.5 0 010 11"/>'),
+  lock: svg('<rect x="6" y="3" width="12" height="18" rx="2.2"/><path d="M10.5 18h3"/>'),
+  locked: svg('<rect x="6" y="3" width="12" height="18" rx="2.2"/><rect x="9.25" y="10.5" width="5.5" height="4.2" rx=".8"/><path d="M10.4 10.5V9.3a1.6 1.6 0 013.2 0v1.2"/>'),
+  expand: svg('<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>'),
+  shrink: svg('<path d="M9 4v5H4"/><path d="M15 4v5h5"/><path d="M9 20v-5H4"/><path d="M15 20v-5h5"/>'),
+  back: svg('<path d="M15 5l-7 7 7 7"/>'),
+  settings: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>'),
+  play: svg('<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>'),
+  pause: svg('<rect x="7" y="5.5" width="3.4" height="13" rx="1" fill="currentColor"/><rect x="13.6" y="5.5" width="3.4" height="13" rx="1" fill="currentColor"/>'),
+  stop: svg('<rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor"/>'),
+  copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/>'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
+  plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  search: svg('<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>'),
+  more: svg('<circle cx="5.5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor"/>'),
+  chevronLeft: svg('<path d="M15 4l-8 8 8 8"/>', 'stroke-width="1.3"'),
+  chevronRight: svg('<path d="M9 4l8 8-8 8"/>', 'stroke-width="1.3"'),
+  book: svg('<path d="M12 6.5C10 5 7 4.5 3.5 5v13c3.5-.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5z"/><path d="M12 6.5v13"/>'),
+  home: svg('<path d="M4 11l8-6.5 8 6.5"/><path d="M6 9.5V19h12V9.5"/>'),
+  library: svg('<rect x="4" y="4" width="4" height="16" rx="1"/><rect x="10" y="4" width="4" height="16" rx="1"/><path d="M16.5 5.2l3.4-.9 3 15.5-3.4.9z" transform="translate(-2.4 0)"/>'),
+  trash: svg('<path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6.5 7l1 12.5h9l1-12.5"/>'),
+  check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+};
