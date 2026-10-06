@@ -5,6 +5,8 @@
   "compatibility_date": "2026-09-01",
   "assets": {
     "directory": "./dist",
+    // Serve index.html as-is (no redirect to "/"); the offline service worker precaches it by name.
+    "html_handling": "none",
     "not_found_handling": "single-page-application"
   }
 }
