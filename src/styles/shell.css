@@ -378,6 +378,7 @@
   background: var(--bg-2);
 }
 .segmented button {
+  white-space: nowrap;
   min-height: 38px;
   padding: 0 0.95rem;
   border-radius: 999px;

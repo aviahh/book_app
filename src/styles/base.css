@@ -123,6 +123,8 @@ svg {
 }
 
 .btn {
+  flex: none;
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;

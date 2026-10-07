@@ -5,6 +5,7 @@
 // (iOS 12 / Safari 12 cannot run PDF.js 6). Each is loaded only when needed.
 import { addBook } from './db.js';
 import { applyTone } from './tone.js';
+import { takePendingProgress } from './backup.js';
 
 /** PDF.js 6 needs roughly Safari 16.4+; regex lookbehind arrived in the same release. */
 function supportsModernEngine() {
@@ -176,6 +177,8 @@ export async function importFile(file, existingIds = new Set()) {
       lastPage: 1,
       finished: false,
     };
+    // Reading progress restored from a backup that didn't include this book.
+    Object.assign(book, takePendingProgress(id));
     await addBook(book, new Blob([data], { type: 'application/pdf' }));
     return book;
   } finally {

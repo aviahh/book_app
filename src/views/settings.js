@@ -1,6 +1,7 @@
 import { getSettings, setSetting, LANGUAGES, DEFAULTS } from '../settings.js';
 import { icons } from '../icons.js';
-import { shell, esc } from './common.js';
+import { shell, esc, toast } from './common.js';
+import { backupSizes, createBackup, backupFileName, restoreBackup } from '../backup.js';
 
 export async function mountSettings(view, _p, nav) {
   const content = shell(view, 'settings');
@@ -27,6 +28,13 @@ export async function mountSettings(view, _p, nav) {
     const est = await navigator.storage?.estimate?.();
     if (est?.usage != null) storage = `${(est.usage / 1048576).toFixed(0)} MB used on this device`;
   } catch {}
+
+  let sizes = { count: 0, bookBytes: 0 };
+  try {
+    sizes = await backupSizes();
+  } catch (e) {}
+  const mb = (n) => (n < 1048576 ? 'under 1 MB' : `about ${Math.round(n / 1048576)} MB`);
+  let withBooks = false;
 
   content.innerHTML = `
     <section class="settings">
@@ -62,6 +70,16 @@ export async function mountSettings(view, _p, nav) {
         ${row('Read-aloud language', 'Auto detects from the text itself.', select('speechLang', [['auto', 'Automatic'], ...LANGUAGES]))}
       </div>
 
+      <h2>Backup</h2>
+      <div class="set-group">
+        ${row('What to back up', `Progress only: your library list, reading progress, statistics and settings (tiny). With books: the PDFs too (${sizes.count} book${sizes.count === 1 ? '' : 's'}, ${mb(sizes.bookBytes)}).`, `
+          <div class="segmented" role="radiogroup">
+            <button role="radio" data-bk="0" aria-checked="true">Progress only</button><button role="radio" data-bk="1" aria-checked="false">With books</button>
+          </div>`)}
+        ${row('Back up now', 'Choose Google Drive, iCloud Drive or Files in the share menu to keep it safe, or it is saved to Downloads.', '<button class="btn subtle" data-act="backup">Back up</button>')}
+        ${row('Restore from a backup', 'Pick a Folio backup file (Drive, Files, Downloads…). It merges with this device: newer progress wins, nothing is deleted. Progress for books not on this device is applied when you add them.', '<button class="btn subtle" data-act="restore">Restore</button><input type="file" data-restore hidden>')}
+      </div>
+
       <h2>About</h2>
       <div class="set-group">
         ${row('Folio', 'Books stay on this device. Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
@@ -92,6 +110,14 @@ export async function mountSettings(view, _p, nav) {
       setSetting(key, v);
       st.querySelector('output').textContent = shown(key, v);
     }
+    const bk = e.target.closest('[data-bk]');
+    if (bk) {
+      withBooks = bk.dataset.bk === '1';
+      for (const b of content.querySelectorAll('[data-bk]')) b.setAttribute('aria-checked', String(b === bk));
+    }
+    const bu = e.target.closest('[data-act="backup"]');
+    if (bu) backup(bu, withBooks);
+    if (e.target.closest('[data-act="restore"]')) content.querySelector('[data-restore]').click();
     const rl = e.target.closest('[data-act="relaunch"]');
     if (rl) relaunch(rl);
     if (e.target.closest('[data-act="reset"]')) {
@@ -99,10 +125,95 @@ export async function mountSettings(view, _p, nav) {
       mountSettings((view.replaceChildren(), view), _p, nav);
     }
   });
-  content.addEventListener('change', (e) => {
+  content.addEventListener('change', async (e) => {
+    if (e.target.matches('[data-restore]')) {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      const btn = content.querySelector('[data-act="restore"]');
+      btn.disabled = true;
+      btn.textContent = 'Restoring…';
+      try {
+        const r = await restoreBackup(file, (i, n) => (btn.textContent = `Restoring ${i + 1}/${n}…`));
+        const parts = [];
+        if (r.added) parts.push(`${r.added} book${r.added > 1 ? 's' : ''} added`);
+        if (r.updated) parts.push(`progress updated for ${r.updated}`);
+        if (r.waiting) parts.push(`progress saved for ${r.waiting} book${r.waiting > 1 ? 's' : ''} not on this device yet`);
+        mountSettings((view.replaceChildren(), view), _p, nav).then(() => toast(view, `Restored${parts.length ? ': ' + parts.join(', ') : ''}.`, 5000));
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Restore';
+        toast(view, err.message || 'Could not restore this file.', 4000);
+      }
+      return;
+    }
     const sel = e.target.closest('[data-select]');
     if (sel) setSetting(sel.dataset.select, sel.value);
   });
+}
+
+/** Make the backup file, then hand it to the share menu (Drive etc.) or save it. */
+async function backup(button, withBooks) {
+  const view = button.closest('.view') || document;
+  // A file ready from an earlier tap: share it now, inside this tap.
+  if (button._file) {
+    const f = button._file;
+    button._file = null;
+    button.textContent = 'Back up';
+    return deliver(f, view);
+  }
+  button.disabled = true;
+  button.textContent = 'Preparing…';
+  let blob;
+  try {
+    blob = await createBackup({ withBooks });
+  } catch (e) {
+    button.disabled = false;
+    button.textContent = 'Back up';
+    return toast(view, 'Could not create the backup.', 4000);
+  }
+  button.disabled = false;
+  const file = { blob, name: backupFileName(withBooks) };
+  try {
+    await deliver(file, view, true);
+    button.textContent = 'Back up';
+  } catch (e) {
+    // Too long since the tap for the share menu (big backups): one more tap.
+    button._file = file;
+    button.textContent = 'Save backup';
+    toast(view, 'Backup ready. Tap “Save backup” to choose where to keep it.', 5000);
+  }
+}
+
+async function deliver({ blob, name }, view, strict = false) {
+  // The share menu offers Google Drive, iCloud Drive, Files… Android only
+  // shares a few file types, so fall back to a plain-text label there; the
+  // contents are the same and Restore reads either.
+  if (navigator.canShare) {
+    for (const [n, type] of [[name, 'application/octet-stream'], [name + '.txt', 'text/plain']]) {
+      const f = new File([blob], n, { type });
+      if (!navigator.canShare({ files: [f] })) continue;
+      try {
+        await navigator.share({ files: [f], title: 'Folio backup' });
+        return toast(view, 'Backup saved.');
+      } catch (e) {
+        if (e.name === 'AbortError') return; // closed the menu
+        if (strict && e.name === 'NotAllowedError') throw e;
+        break;
+      }
+    }
+  }
+  if (/(iPad|iPhone|iPod).*OS 1[0-2]_/.test(navigator.userAgent)) {
+    return toast(view, 'This iOS version can’t save files from a web page. Make the backup on another device.', 6000);
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  toast(view, 'Backup saved to Downloads.');
 }
 
 function buildLabel() {
