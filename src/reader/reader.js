@@ -341,8 +341,91 @@ class Reader {
         .page(n)
         .then((page) => (p.isConnected ? buildTextLayer(page, tl, pw) : null))
         .catch(() => {});
+      this.#addLinks(n, p);
     }
     return p;
+  }
+
+  /** Links on page n (table of contents entries, web links), positions in % of the page. */
+  #pageLinks(n) {
+    this.linkCache = this.linkCache || new Map();
+    if (!this.linkCache.has(n)) {
+      this.linkCache.set(
+        n,
+        this.cache
+          .page(n)
+          .then(async (page) => {
+            const vp = page.getViewport({ scale: 1 });
+            const out = [];
+            for (const a of await page.getAnnotations()) {
+              if (a.subtype !== 'Link' || !a.rect) continue;
+              const link = {};
+              if (a.dest) {
+                try {
+                  let dest = a.dest;
+                  if (typeof dest === 'string') dest = await this.doc.getDestination(dest);
+                  const ref = dest && dest[0];
+                  const index = typeof ref === 'number' ? ref : ref ? await this.doc.getPageIndex(ref) : -1;
+                  if (index >= 0) link.page = index + 1;
+                } catch (e) {}
+              } else if (a.url && /^(https?:|mailto:)/i.test(a.url)) link.url = a.url;
+              if (!link.page && !link.url) continue;
+              // (PDF.js 6 dropped convertToViewportRectangle; points work in both.)
+              const [x1, y1] = vp.convertToViewportPoint(a.rect[0], a.rect[1]);
+              const [x2, y2] = vp.convertToViewportPoint(a.rect[2], a.rect[3]);
+              link.left = (Math.min(x1, x2) / vp.width) * 100;
+              link.top = (Math.min(y1, y2) / vp.height) * 100;
+              link.width = (Math.abs(x2 - x1) / vp.width) * 100;
+              link.height = (Math.abs(y2 - y1) / vp.height) * 100;
+              out.push(link);
+            }
+            return out;
+          })
+          .catch(() => []),
+      );
+    }
+    return this.linkCache.get(n);
+  }
+
+  /** Invisible link areas over the page; taps on them are handled in #tap. */
+  #addLinks(n, pageEl) {
+    this.#pageLinks(n).then((links) => {
+      if (!links.length || !pageEl.isConnected) return;
+      const layer = document.createElement('div');
+      layer.className = 'linkLayer';
+      for (const l of links) {
+        const d = document.createElement('div');
+        d.className = 'pdf-link';
+        if (l.page) d.dataset.page = l.page;
+        if (l.url) d.dataset.url = l.url;
+        Object.assign(d.style, { left: `${l.left}%`, top: `${l.top}%`, width: `${l.width}%`, height: `${l.height}%` });
+        layer.append(d);
+      }
+      pageEl.append(layer);
+    });
+  }
+
+  /** The link under a screen point, if any (with a little slack for fingers). */
+  #linkAt(x, y) {
+    const root = this.mode === 'single' ? this.stripEl : this.bookEl;
+    let best = null;
+    let bestD = 10;
+    for (const el of root.querySelectorAll('.slot .pdf-link')) {
+      const r = el.getBoundingClientRect();
+      const d = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+      if (d < bestD) {
+        bestD = d;
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  #followLink(el) {
+    el.classList.add('hit');
+    setTimeout(() => el.classList.remove('hit'), 450);
+    if (el.dataset.url) return window.open(el.dataset.url, '_blank', 'noopener');
+    this.go(spreadOf(this.mode, +el.dataset.page));
   }
 
   #slot(cls, n, opts) {
@@ -1179,8 +1262,11 @@ class Reader {
     }
     this.lastTap = { t: now, x: ptr.cx0, y: ptr.cy0 };
     clearTimeout(this.tapTimer);
+    const link = this.#linkAt(ptr.cx0, ptr.cy0);
     this.tapTimer = setTimeout(() => {
       this.lastTap = null;
+      // A single tap on a link follows it (a double tap still translates).
+      if (link && link.isConnected) return this.#followLink(link);
       if (this.el.classList.contains('chrome-on')) this.#hideChrome();
       else this.#showChrome();
     }, TAP_MS);
