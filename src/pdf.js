@@ -4,6 +4,7 @@
 // Two engines: PDF.js 6 for current browsers, PDF.js 2.16 for older ones
 // (iOS 12 / Safari 12 cannot run PDF.js 6). Each is loaded only when needed.
 import { addBook } from './db.js';
+import { applyTone } from './tone.js';
 
 /** PDF.js 6 needs roughly Safari 16.4+; regex lookbehind arrived in the same release. */
 function supportsModernEngine() {
@@ -43,7 +44,7 @@ export function releaseCanvas(c) {
 }
 
 /** Render a page so that it is `cssWidth` CSS pixels wide. */
-export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels = MAX_PIXELS } = {}) {
+export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels = MAX_PIXELS, tone = 'original' } = {}) {
   const base = page.getViewport({ scale: 1 });
   let dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
   let scale = (cssWidth / base.width) * dpr;
@@ -56,6 +57,7 @@ export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels
   canvas.height = Math.floor(viewport.height);
   const task = page.render({ canvasContext: canvas.getContext('2d', { alpha: false }), viewport, background: '#fff' });
   await task.promise;
+  if (tone !== 'original') await applyTone(canvas, page, viewport, tone);
   return canvas;
 }
 

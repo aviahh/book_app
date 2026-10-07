@@ -71,6 +71,7 @@ class Reader {
     this.nav = nav;
     this.total = doc.numPages;
     this.cache = new PageCache(doc);
+    this.cache.setTone(getSettings().pageTone);
     this.settings = getSettings();
     this.mode = null;
     this.spread = 0; // spread index (double) or page index (single)
@@ -90,6 +91,7 @@ class Reader {
       current: () => this.spread,
       go: (i) => this.go(i),
     });
+    this.thumbs.cache.setTone(this.settings.pageTone);
     this.#bindInput();
     this.cleanups.push(onSettingsChange((s) => this.#applySettings(s)));
     this.cleanups.push(trackReading(() => !document.hidden));
@@ -162,9 +164,11 @@ class Reader {
   }
 
   #applySettings(s) {
+    const toneChanged = this.settings.pageTone !== s.pageTone;
     this.settings = s;
     this.el.dataset.backdrop = s.backdrop;
     this.el.dataset.tone = s.pageTone;
+    if (toneChanged) this.#retone();
     this.el.classList.toggle('toolbar-top', s.toolbarPosition === 'top');
   }
 
@@ -392,6 +396,23 @@ class Reader {
     this.hiResTimer = setTimeout(() => this.#hiRes(), 260);
   }
 
+  /** Page tone changed: re-render every mounted page (and the thumbnails) in the new tone. */
+  #retone() {
+    const tone = this.settings.pageTone;
+    this.cache.setTone(tone);
+    this.thumbs.cache.setTone(tone);
+    this.thumbs.rebuild();
+    const visible = new Set(this.#visibleCanvases());
+    for (const c of this.cameraEl.querySelectorAll('.page canvas')) {
+      delete c.dataset.zoom;
+      this.cache.paint(+c.parentElement.dataset.page, c, visible.has(c) ? 0 : 1).catch(() => {});
+    }
+    if (this.camera.zoomed) {
+      clearTimeout(this.hiResTimer);
+      this.hiResTimer = setTimeout(() => this.#hiRes(), 300);
+    }
+  }
+
   /** Canvases of the pages currently on screen. */
   #visibleCanvases() {
     if (this.mode === 'double') return [...this.bookEl.querySelectorAll(':scope > .slot .page canvas')];
@@ -426,7 +447,7 @@ class Reader {
         continue;
       }
       try {
-        const tmp = await renderPageCanvas(await this.cache.page(n), this.pw * want, { maxPixels: ZOOM_PIXELS, maxDpr: 3 });
+        const tmp = await renderPageCanvas(await this.cache.page(n), this.pw * want, { maxPixels: ZOOM_PIXELS, maxDpr: 3, tone: this.settings.pageTone });
         if (token === this.hiResToken && c.isConnected && tmp.width) {
           c.width = tmp.width;
           c.height = tmp.height;
@@ -723,6 +744,9 @@ class Reader {
       on(a, 'pointerdown', (e) => this.#down(e, a.classList.contains('next') ? 'arrow-next' : 'arrow-prev'));
     }
     on(this.chrome, 'pointerdown', () => this.#armHide());
+    on(window, 'pointermove', (e) => this.#handleMove(e));
+    on(window, 'pointerup', (e) => this.#handleUp(e));
+    on(window, 'pointercancel', (e) => this.#handleUp(e));
     on(this.pop, 'pointerdown', (e) => {
       e.stopPropagation();
       if (this.popCloseTimer) this.#armPopupClose(); // using the bubble restarts its countdown
@@ -1124,29 +1148,106 @@ class Reader {
     const pos = hitTest(spans, x, y, { mode: 'char', maxDist: 6 });
     const word = pos && wordAt(spans, pos);
     if (!word) return;
-    const rects = rangeRects(spans, word.a, word.b);
+    this.wordSel = { spans, a: word.a, b: word.b };
+    this.#translateSelection();
+  }
+
+  /** Translate the current word selection (one word, or several after dragging the handles). */
+  async #translateSelection() {
+    const { spans, a, b } = this.wordSel;
+    const rects = rangeRects(spans, a, b);
     if (!rects.length) return;
+    const text = rangeText(spans, a, b);
     this.#drawHighlights(rects, 'word');
+    this.#placeHandles(rects);
     const anchor = this.lock.rectToLocal(rects[0]);
     const target = this.settings.translateTo;
-    this.popWord = { text: word.text, lang: guessLang(word.text) };
-    this.#renderPopup(anchor, { word: word.text, loading: true });
+    const req = (this.popReq = (this.popReq || 0) + 1);
+    this.popWord = { text, lang: guessLang(text) };
+    clearTimeout(this.popCloseTimer);
+    this.#renderPopup(anchor, { word: text, loading: true });
     try {
-      let res = await translate(word.text, target);
-      // Word already in the target language → show English instead.
+      let res = await translate(text, target);
+      // Already in the target language → show English instead.
       if (res.source && res.source.split('-')[0] === target.split('-')[0] && target !== 'en') {
-        res = await translate(word.text, 'en');
+        res = await translate(text, 'en');
       }
-      if (this.popWord?.text !== word.text) return;
+      if (req !== this.popReq || this.pop.hidden) return;
       if (res.source) this.popWord.lang = res.source === 'he' ? 'iw' : res.source;
-      this.#renderPopup(anchor, { word: word.text, result: res });
-      this.#armPopupClose();
+      this.#renderPopup(anchor, { word: text, result: res });
+      this.#armPopupClose(); // a fresh countdown for every new translation
     } catch {
-      if (this.popWord?.text === word.text) {
-        this.#renderPopup(anchor, { word: word.text, error: true });
+      if (req === this.popReq && !this.pop.hidden) {
+        this.#renderPopup(anchor, { word: text, error: true });
         this.#armPopupClose();
       }
     }
+  }
+
+  // ---- selection handles: drag to include neighbouring words
+
+  #placeHandles(rects) {
+    if (!this.handles) {
+      this.handles = ['start', 'end'].map((which) => {
+        const h = document.createElement('div');
+        h.className = `sel-handle ${which}`;
+        h.setAttribute('aria-hidden', 'true');
+        h.addEventListener('pointerdown', (e) => this.#handleDown(e, which));
+        this.el.append(h);
+        return h;
+      });
+    }
+    const first = this.lock.rectToLocal(rects[0]);
+    const last = this.lock.rectToLocal(rects[rects.length - 1]);
+    const [hs, he] = this.handles;
+    Object.assign(hs.style, { left: `${first.left}px`, top: `${first.top}px`, height: `${first.height}px` });
+    Object.assign(he.style, { left: `${last.left + last.width}px`, top: `${last.top}px`, height: `${last.height}px` });
+    hs.hidden = he.hidden = false;
+  }
+
+  #hideHandles() {
+    if (this.handles) for (const h of this.handles) h.hidden = true;
+    this.handleDrag = null;
+  }
+
+  #handleDown(e, which) {
+    if (e.button > 0 || !this.wordSel) return;
+    e.stopPropagation();
+    e.preventDefault();
+    clearTimeout(this.popCloseTimer); // no closing while the selection is being adjusted
+    const r = this.handles[which === 'start' ? 0 : 1].getBoundingClientRect();
+    // Aim at the middle of the text line, not at the finger (which sits on the knob).
+    this.handleDrag = { which, id: e.pointerId, dy: r.top + r.height / 2 - e.clientY, changed: false };
+    this.pop.classList.add('adjusting');
+  }
+
+  #handleMove(e) {
+    const d = this.handleDrag;
+    if (!d || e.pointerId !== d.id) return;
+    const sel = this.wordSel;
+    const pos = hitTest(sel.spans, e.clientX, e.clientY + d.dy, { mode: 'char', maxDist: 40 });
+    const w = pos && wordAt(sel.spans, pos);
+    if (!w) return;
+    const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
+    let { a, b } = sel;
+    if (d.which === 'start') a = before(w.a, b) ? w.a : a;
+    else b = before(a, w.b) ? w.b : b;
+    if (a === sel.a && b === sel.b) return;
+    sel.a = a;
+    sel.b = b;
+    d.changed = true;
+    const rects = rangeRects(sel.spans, a, b);
+    this.#drawHighlights(rects, 'word');
+    this.#placeHandles(rects);
+  }
+
+  #handleUp(e) {
+    const d = this.handleDrag;
+    if (!d || e.pointerId !== d.id) return;
+    this.handleDrag = null;
+    this.pop.classList.remove('adjusting');
+    if (d.changed) this.#translateSelection();
+    else this.#armPopupClose();
   }
 
   #renderPopup(anchor, { word, loading, result, error }) {
@@ -1160,6 +1261,7 @@ class Reader {
           .join('')}</div>`
       : '';
     const rtl = result ? isRtl(this.settings.translateTo) : false;
+    pop.classList.toggle('phrase', /\s/.test(word));
     pop.innerHTML = `
       <div class="pop-main">
         <button class="pop-word" data-act="popSpeak" aria-label="Pronounce ${esc(word)}">${icons.speaker}<span>${esc(word)}</span></button>
@@ -1195,9 +1297,11 @@ class Reader {
   #closePopup() {
     clearTimeout(this.popCloseTimer);
     this.popCloseTimer = null;
+    this.#hideHandles();
     if (this.pop.hidden) return;
     this.pop.hidden = true;
     this.popWord = null;
+    this.wordSel = null;
     this.hlLayer.querySelectorAll('.hl.word').forEach((h) => h.remove());
   }
 

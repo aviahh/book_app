@@ -106,14 +106,11 @@
   width: 100%;
   height: 100%;
 }
-.reader[data-tone='warm'] .page canvas {
-  filter: sepia(0.28) saturate(1.15) brightness(0.97);
-}
-.reader[data-tone='warm'] .page {
-  background: #f6ecd9;
-}
-.reader[data-tone='night'] .page canvas {
-  filter: invert(0.9) hue-rotate(180deg) brightness(1.05) contrast(0.88) sepia(0.15);
+/* Warm / Night tones are painted into the page images themselves (src/tone.js),
+   so pictures keep their real colours. Only the paper behind them changes here. */
+.reader[data-tone='warm'] .page,
+.reader[data-tone='warm'] .slot:not(.empty) {
+  background: #f6ead3;
 }
 .reader[data-tone='night'] .slot.right:not(.empty),
 .reader[data-tone='night'] .slot.single:not(.empty) {
@@ -937,13 +934,6 @@
 .bend-face.blank {
   background: linear-gradient(90deg, #f3f0ea, #fbfaf7);
 }
-.reader[data-tone='warm'] .bend-face,
-.reader[data-tone='warm'] .fold-page canvas {
-  filter: sepia(0.28) saturate(1.15) brightness(0.97);
-}
-.reader[data-tone='night'] .bend-face {
-  filter: invert(0.9) hue-rotate(180deg) brightness(1.05) contrast(0.88) sepia(0.15);
-}
 
 /* ---------- older browsers: no flexbox gap (class set by polyfills.js) ---------- */
 .no-flexgap .chrome > * + * {
@@ -963,4 +953,72 @@
 }
 .no-flexgap .pop-word svg {
   margin-right: 8px;
+}
+
+/* ---------- translation selection handles ---------- */
+.sel-handle {
+  position: absolute;
+  z-index: 32;
+  width: 2px;
+  margin-left: -1px;
+  background: #3a8dff;
+  border-radius: 1px;
+  touch-action: none;
+}
+/* knob, plus a generous invisible grip area around it */
+.sel-handle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: #3a8dff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.sel-handle.start::after {
+  top: -13px;
+}
+.sel-handle.end::after {
+  bottom: -13px;
+}
+.sel-handle::before {
+  content: '';
+  position: absolute;
+  left: -21px;
+  right: -21px;
+  top: -26px;
+  bottom: -26px;
+}
+.word-pop.adjusting {
+  opacity: 0.35;
+  transition: opacity 0.15s;
+}
+.word-pop.phrase .pop-main {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.word-pop.phrase .pop-word {
+  font-size: 1.05rem;
+  text-align: start;
+  min-height: 36px;
+}
+.word-pop.phrase .pop-tr {
+  font-size: 1.15rem;
+  text-align: start; /* right-aligned for Hebrew/Arabic (dir=rtl) */
+  align-self: stretch;
+}
+.no-flexgap .word-pop.phrase .pop-main > * + * {
+  margin-left: 0;
+  margin-top: 4px;
+}
+
+/* Paper behind the Soft-page strips matches the page tone (no white slivers). */
+.reader[data-tone='warm'] .bend-face {
+  background: #f6ead3;
+}
+.reader[data-tone='night'] .bend-face {
+  background: #1d1b18;
 }

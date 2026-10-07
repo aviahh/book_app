@@ -19,6 +19,15 @@ export class PageCache {
     return this.pages.get(n);
   }
 
+  /** Page tone (original / warm / night): changing it re-renders everything. */
+  setTone(tone) {
+    if (tone === this.tone) return;
+    this.tone = tone;
+    for (const e of this.map.values()) e.promise.then(releaseCanvas, () => {});
+    this.map.clear();
+    this.pending = [];
+  }
+
   /** Render width in CSS px; zoomed reading uses bigger renders and a smaller cache. */
   setWidth(width, { limit = this.limit, maxPixels } = {}) {
     width = Math.round(width);
@@ -67,7 +76,7 @@ export class PageCache {
       this.pending.sort((a, b) => a.prio - b.prio);
       const e = this.pending.shift();
       try {
-        e.resolve(await renderPageCanvas(await this.page(e.n), e.width, this.maxPixels ? { maxPixels: this.maxPixels } : {}));
+        e.resolve(await renderPageCanvas(await this.page(e.n), e.width, { tone: this.tone || 'original', ...(this.maxPixels ? { maxPixels: this.maxPixels } : {}) }));
       } catch (err) {
         e.reject(err);
         if (this.map.get(e.n) === e) this.map.delete(e.n);
