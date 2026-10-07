@@ -162,62 +162,141 @@ function providersFor(lang, prefer) {
 
 const urlFor = (provider, text, lang) => (provider === 'edge' ? edgeUrl(text, EDGE_VOICES[lang]) : ttsUrl(text, lang));
 
+// A tenth of a second of silence (8 kHz, 8-bit WAV), played inside a tap to
+// "unlock" audio elements: iOS only lets an element play later, without a tap,
+// once it has played something during one.
+const SILENCE = (() => {
+  const n = 800;
+  const b = new Uint8Array(44 + n);
+  const dv = new DataView(b.buffer);
+  const str = (o, t) => t.split('').forEach((c, i) => (b[o + i] = c.charCodeAt(0)));
+  str(0, 'RIFF');
+  dv.setUint32(4, 36 + n, true);
+  str(8, 'WAVE');
+  str(12, 'fmt ');
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true);
+  dv.setUint32(24, 8000, true);
+  dv.setUint32(28, 8000, true);
+  dv.setUint16(32, 1, true);
+  dv.setUint16(34, 8, true);
+  str(36, 'data');
+  dv.setUint32(40, n, true);
+  b.fill(128, 44);
+  let bin = '';
+  for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return 'data:audio/wav;base64,' + btoa(bin);
+})();
+
 /**
- * A pausable, chunk-streaming speech player.
- * Must be started from inside a user gesture (iOS autoplay rules).
+ * A pausable, chunk-by-chunk speech player.
+ *
+ * The Microsoft voice is downloaded piece by piece and played from memory
+ * (blob URLs): iOS Safari refuses to play audio straight from a server that
+ * streams it without byte-range support, which our voice relay does. The
+ * first piece is short, so playback still starts quickly, and the next piece
+ * downloads while the current one plays.
  */
 export class Speech {
   constructor({ onState, voice = () => 'microsoft' } = {}) {
     this.onState = onState || (() => {});
     this.voicePref = voice;
-    // Two elements: one plays while the other preloads the next chunk.
+    // Two elements: one plays while the other holds the next piece.
     this.players = [new Audio(), new Audio()];
     for (const a of this.players) {
       a.preload = 'auto';
-      a.addEventListener('ended', () => this.#advance());
-      a.addEventListener('error', () => this.#onError());
+      a.addEventListener('ended', () => a.dataset.real && this.#advance());
+      a.addEventListener('error', () => a.dataset.real && this.#onError());
     }
     this.state = 'idle';
+    this.gen = 0;
+    this.blobs = new Map();
   }
 
   get active() {
     return this.state === 'playing' || this.state === 'paused' || this.state === 'loading';
   }
 
+  /** Call from inside a tap (e.g. the speaker button): lets audio start later without one. */
+  unlock() {
+    if (this.active) return;
+    for (const a of this.players) {
+      delete a.dataset.real;
+      a.src = SILENCE;
+      const p = a.play();
+      if (p && p.then) p.then(() => a.pause()).catch(() => {});
+    }
+    if (!this.speechUnlocked && 'speechSynthesis' in window) {
+      this.speechUnlocked = true;
+      try {
+        const u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0;
+        speechSynthesis.speak(u);
+      } catch (e) {}
+    }
+  }
+
   speak(text, lang) {
     this.stop(true);
+    this.unlock(); // in case this call is itself inside a tap
     this.lang = lang;
     this.providers = providersFor(lang, this.voicePref());
     this.usingFallback = false;
-    const b = this.players[1];
-    // Unlock the second element during the gesture so it can start later.
-    b.muted = true;
-    b.play()
-      .then(() => {
-        b.pause();
-        b.muted = false;
-      })
-      .catch(() => (b.muted = false));
     this.#start(text);
   }
 
+  /** A playable URL for piece i: a downloaded blob for the Microsoft voice, the direct address for Google's. */
+  #src(i) {
+    if (this.provider !== 'edge') return Promise.resolve(urlFor(this.provider, this.chunks[i], this.lang));
+    if (!this.blobs.has(i)) {
+      const url = urlFor(this.provider, this.chunks[i], this.lang);
+      this.blobs.set(
+        i,
+        fetch(url)
+          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? URL.createObjectURL(b) : Promise.reject(new Error('no audio')))),
+      );
+    }
+    return this.blobs.get(i);
+  }
+
+  #freeBlobs() {
+    for (const p of this.blobs.values()) p.then((u) => u.indexOf('blob:') === 0 && URL.revokeObjectURL(u), () => {});
+    this.blobs = new Map();
+  }
+
+  #load(player, i, gen) {
+    return this.#src(i).then((url) => {
+      if (gen !== this.gen) return false;
+      player.dataset.real = '1';
+      player.src = url;
+      player.load();
+      return true;
+    });
+  }
+
   /** (Re)start playback of `text` with the current best provider. */
-  #start(text) {
+  async #start(text) {
+    const gen = ++this.gen;
+    this.#freeBlobs();
     this.provider = this.providers[0];
     this.chunks = chunkText(text, LIMITS[this.provider], Math.min(LIMITS[this.provider], 160));
     if (!this.chunks.length) return this.#set('idle', true);
     this.index = 0;
     this.cur = 0;
-    const [a, b] = this.players;
-    a.src = urlFor(this.provider, this.chunks[0], this.lang);
-    if (this.chunks[1]) {
-      b.src = urlFor(this.provider, this.chunks[1], this.lang);
-      b.load();
-    }
     this.#set('loading');
+    const [a, b] = this.players;
+    try {
+      if (!(await this.#load(a, 0, gen))) return;
+    } catch (e) {
+      if (gen === this.gen) this.#onError();
+      return;
+    }
+    if (this.chunks[1]) this.#load(b, 1, gen).catch(() => {});
     a.play()
-      .then(() => this.state === 'loading' && this.#set('playing'))
-      .catch(() => this.#onError());
+      .then(() => gen === this.gen && this.state === 'loading' && this.#set('playing'))
+      .catch(() => gen === this.gen && this.#onError());
   }
 
   pause() {
@@ -240,30 +319,40 @@ export class Speech {
   stop(silent = false) {
     const wasActive = this.state !== 'idle';
     this.state = 'idle'; // first, so resetting the players can't trigger fallbacks
+    this.gen++;
     for (const a of this.players) {
+      delete a.dataset.real;
       a.pause();
       a.removeAttribute('src');
       a.load();
     }
+    this.#freeBlobs();
     if (this.usingFallback) speechSynthesis.cancel();
     this.usingFallback = false;
     if (!silent && wasActive) this.#set('idle');
   }
 
-  #advance() {
+  async #advance() {
     if (this.state === 'idle' || this.usingFallback) return;
+    const gen = this.gen;
     this.index++;
     if (this.index >= this.chunks.length) return this.#set('idle', true);
-    const playing = this.players[1 - this.cur];
+    const next = this.players[1 - this.cur];
     this.cur = 1 - this.cur;
-    playing.play().catch(() => this.#onError());
-    // Preload the following chunk into the element that just finished.
-    const nextIdx = this.index + 1;
-    if (nextIdx < this.chunks.length) {
-      const spare = this.players[1 - this.cur];
-      spare.src = urlFor(this.provider, this.chunks[nextIdx], this.lang);
-      spare.load();
+    // Normally already loaded while the previous piece played; wait if not.
+    try {
+      if (!next.dataset.real) await this.#load(next, this.index, gen);
+    } catch (e) {
+      if (gen === this.gen) this.#onError();
+      return;
     }
+    if (gen !== this.gen) return;
+    next.play().catch(() => gen === this.gen && this.#onError());
+    // Fetch the following piece into the element that just finished.
+    const after = this.index + 1;
+    const spare = this.players[1 - this.cur];
+    delete spare.dataset.real;
+    if (after < this.chunks.length) this.#load(spare, after, gen).catch(() => {});
   }
 
   // A voice service failed: continue from the current piece with the next
@@ -275,6 +364,7 @@ export class Speech {
     this.providers = this.providers.slice(1);
     if (this.providers.length) return this.#start(rest);
     if (!('speechSynthesis' in window)) return this.#set('idle', true);
+    this.gen++;
     this.usingFallback = true;
     const u = new SpeechSynthesisUtterance(rest);
     u.lang = this.lang === 'iw' ? 'he-IL' : this.lang;

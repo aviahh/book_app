@@ -74,11 +74,14 @@ export class OrientationLock {
 
   /** Viewport point → reader-local point. */
   toLocal(x, y) {
-    if (!this.rotation) return { x, y };
+    // Measure where the reader really is: on iOS the visual viewport can be
+    // shifted (page zoom, address bar, scroll), so it isn't always at 0,0.
+    const box = this.el.getBoundingClientRect();
+    if (!this.rotation) return { x: x - box.left, y: y - box.top };
     const W = this.el.offsetWidth;
     const H = this.el.offsetHeight;
-    const vx = x - innerWidth / 2;
-    const vy = y - innerHeight / 2;
+    const vx = x - (box.left + box.width / 2);
+    const vy = y - (box.top + box.height / 2);
     const r = (-this.rotation * Math.PI) / 180;
     return {
       x: vx * Math.cos(r) - vy * Math.sin(r) + W / 2,

@@ -172,6 +172,30 @@ export function installPointerShim(force = false) {
 
 installPointerShim(location.search.includes('pointer-shim'));
 
+// ---------------------------------------------------------------- iOS page zoom guard
+// In Safari (outside the home-screen app) iOS can still pinch- or double-tap-
+// zoom the whole page, even with touch-action / user-scalable set. A zoomed or
+// shifted page moves everything the reader draws on top of the text (word
+// highlights, the translation bubble, read-aloud selection). Inside the
+// reader, block those native gestures — the reader has its own zoom.
+(function installZoomGuard() {
+  const inReader = (el) => el && el.closest && el.closest('.reader') && !el.closest('.ts-track, .word-pop');
+  for (const g of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(g, (e) => inReader(e.target) && e.preventDefault(), { passive: false });
+  }
+  let lastEnd = 0;
+  document.addEventListener(
+    'touchend',
+    (e) => {
+      if (!inReader(e.target) || e.target.closest('button, a, input, select, label')) return;
+      const now = Date.now();
+      if (now - lastEnd < 350 && e.cancelable) e.preventDefault(); // second tap of a double-tap
+      lastEnd = now;
+    },
+    { passive: false },
+  );
+})();
+
 // ---------------------------------------------------------------- CSS feature flags
 // Flexbox `gap` (Safari 14.1+) can't be feature-queried in CSS; detect it here
 // so the stylesheet can add margins instead.

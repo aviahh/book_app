@@ -691,8 +691,9 @@
   animation-delay: -0.75s;
 }
 .tts-bar:not([data-state='playing']) .tts-wave i {
-  animation-play-state: paused;
-  transform: scaleY(0.3);
+  /* settle into neat, even bars (a paused animation froze them at random heights) */
+  animation: none;
+  transform: scaleY(0.35);
 }
 @keyframes wave {
   0%,
@@ -1021,4 +1022,12 @@
 }
 .reader[data-tone='night'] .bend-face {
   background: #1d1b18;
+}
+
+/* While a book is open the page itself must not scroll or bounce (iOS). */
+html.reading,
+html.reading body {
+  overflow: hidden;
+  height: 100%;
+  overscroll-behavior: none;
 }

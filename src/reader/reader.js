@@ -93,6 +93,9 @@ class Reader {
     });
     this.thumbs.cache.setTone(this.settings.pageTone);
     this.#bindInput();
+    // Keep the page itself still while reading (iOS likes to scroll/zoom it).
+    document.documentElement.classList.add('reading');
+    window.scrollTo(0, 0);
     this.cleanups.push(onSettingsChange((s) => this.#applySettings(s)));
     this.cleanups.push(trackReading(() => !document.hidden));
     this.#applySettings(this.settings);
@@ -1308,6 +1311,9 @@ class Reader {
   // ------------------------------------------------------------------ read-aloud selection
 
   #enterReadMode() {
+    // This runs inside the tap on the speaker button: unlock audio now, so
+    // playback can start later when the selection is finished (iOS rules).
+    this.speech.unlock();
     this.readMode = true;
     this.el.classList.add('read-mode');
     this.el.querySelector('[data-act="speak"]').classList.add('on');
@@ -1391,6 +1397,7 @@ class Reader {
     this.thumbs.destroy();
     for (const fn of this.cleanups) fn();
     this.#drop([this.el]);
+    document.documentElement.classList.remove('reading');
     this.doc.destroy();
   }
 }
