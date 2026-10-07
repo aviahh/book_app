@@ -10,9 +10,11 @@ export async function mountSettings(view, _p, nav) {
       ${options.map(([v, l]) => `<button role="radio" data-key="${key}" data-val="${v}" aria-checked="${getSettings()[key] === v}">${l}</button>`).join('')}
     </div>`;
   const toggle = (key) => `<button class="switch" role="switch" data-toggle="${key}" aria-checked="${getSettings()[key]}"><i></i></button>`;
-  const stepper = (key, min, max, step = 1, unit = '') => `
+  const UNITS = { autoHideSeconds: ' s', popupSeconds: ' s' };
+  const shown = (key, v) => (key === 'popupSeconds' && v === 0 ? 'Never' : `${v}${UNITS[key] || ''}`);
+  const stepper = (key, min, max, step = 1) => `
     <div class="stepper" data-stepper="${key}" data-min="${min}" data-max="${max}" data-step="${step}">
-      <button data-d="-1" aria-label="Decrease">−</button><output>${getSettings()[key]}${unit}</output><button data-d="1" aria-label="Increase">+</button>
+      <button data-d="-1" aria-label="Decrease">−</button><output>${shown(key, getSettings()[key])}</output><button data-d="1" aria-label="Increase">+</button>
     </div>`;
   const select = (key, options) => `
     <select data-select="${key}">${options.map(([v, l]) => `<option value="${v}" ${getSettings()[key] === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
@@ -47,13 +49,14 @@ export async function mountSettings(view, _p, nav) {
       <div class="set-group">
         ${row('Full screen while reading', 'Hides the browser bars and other apps when a book opens.', toggle('fullscreen'))}
         ${row('Toolbar position', '', seg('toolbarPosition', [['top', 'Top'], ['bottom', 'Bottom']]))}
-        ${row('Hide controls after', 'Toolbar and arrows fade away after this many seconds.', stepper('autoHideSeconds', 2, 10, 0.5, ' s'))}
+        ${row('Hide controls after', 'Toolbar and arrows fade away after this many seconds.', stepper('autoHideSeconds', 2, 10, 0.5))}
         ${row('Page tone', 'Warm and Night are easier on the eyes in the evening.', seg('pageTone', [['original', 'Original'], ['warm', 'Warm'], ['night', 'Night']]))}
         ${row('Surroundings', 'The colour around the book.', seg('backdrop', [['night', 'Ink'], ['walnut', 'Walnut'], ['linen', 'Linen']]))}
       </div>
 
       <h2>Language</h2>
       <div class="set-group">
+        ${row('Close translation bubble after', 'The bubble from double-tapping a word closes by itself. Touching it restarts the countdown.', stepper('popupSeconds', 0, 15, 0.5))}
         ${row('Translate words into', 'Double-tap any word while reading.', select('translateTo', LANGUAGES))}
         ${row('Voice', 'For reading passages aloud. Microsoft is the natural voice from EZ_shortcut (Jenny in English, Hila in Hebrew).', seg('speechVoice', [['microsoft', 'Microsoft'], ['google', 'Google']]))}
         ${row('Read-aloud language', 'Auto detects from the text itself.', select('speechLang', [['auto', 'Automatic'], ...LANGUAGES]))}
@@ -86,7 +89,7 @@ export async function mountSettings(view, _p, nav) {
       const step = +st.dataset.step;
       const v = Math.min(+st.dataset.max, Math.max(+st.dataset.min, getSettings()[key] + step * +s.dataset.d));
       setSetting(key, v);
-      st.querySelector('output').textContent = `${v}${key === 'autoHideSeconds' ? ' s' : ''}`;
+      st.querySelector('output').textContent = shown(key, v);
     }
     if (e.target.closest('[data-act="reset"]')) {
       for (const [k, v] of Object.entries(DEFAULTS)) setSetting(k, v);

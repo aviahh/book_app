@@ -679,7 +679,10 @@ class Reader {
       on(a, 'pointerdown', (e) => this.#down(e, a.classList.contains('next') ? 'arrow-next' : 'arrow-prev'));
     }
     on(this.chrome, 'pointerdown', () => this.#armHide());
-    on(this.pop, 'pointerdown', (e) => e.stopPropagation());
+    on(this.pop, 'pointerdown', (e) => {
+      e.stopPropagation();
+      if (this.popCloseTimer) this.#armPopupClose(); // using the bubble restarts its countdown
+    });
     on(this.stage, 'wheel', (e) => this.#wheel(e), { passive: false });
     on(document, 'fullscreenchange', () => this.#syncFullscreenButton());
     on(document, 'webkitfullscreenchange', () => this.#syncFullscreenButton());
@@ -1093,8 +1096,12 @@ class Reader {
       if (this.popWord?.text !== word.text) return;
       if (res.source) this.popWord.lang = res.source === 'he' ? 'iw' : res.source;
       this.#renderPopup(anchor, { word: word.text, result: res });
+      this.#armPopupClose();
     } catch {
-      if (this.popWord?.text === word.text) this.#renderPopup(anchor, { word: word.text, error: true });
+      if (this.popWord?.text === word.text) {
+        this.#renderPopup(anchor, { word: word.text, error: true });
+        this.#armPopupClose();
+      }
     }
   }
 
@@ -1133,7 +1140,17 @@ class Reader {
     pop.style.setProperty('--arrow-x', `${Math.max(18, Math.min(pw - 18, cx - left))}px`);
   }
 
+  /** Close the bubble by itself after the chosen delay (Settings; 0 = never). */
+  #armPopupClose() {
+    clearTimeout(this.popCloseTimer);
+    this.popCloseTimer = null;
+    const secs = this.settings.popupSeconds;
+    if (secs > 0) this.popCloseTimer = setTimeout(() => this.#closePopup(), secs * 1000);
+  }
+
   #closePopup() {
+    clearTimeout(this.popCloseTimer);
+    this.popCloseTimer = null;
     if (this.pop.hidden) return;
     this.pop.hidden = true;
     this.popWord = null;

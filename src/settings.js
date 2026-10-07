@@ -15,6 +15,7 @@ export const DEFAULTS = {
   pageTone: 'original', // 'original' | 'warm' | 'night'
   backdrop: 'night', // 'night' | 'walnut' | 'linen'
   theme: 'auto', // 'auto' (follow the device) | 'light' | 'dark'
+  popupSeconds: 2.5, // translation bubble closes by itself after this long; 0 = never
   translateTo: 'iw',
   speechLang: 'auto',
   speechVoice: 'microsoft', // 'microsoft' (natural voices, as in EZ_shortcut) | 'google'
