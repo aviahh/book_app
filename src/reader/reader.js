@@ -1656,7 +1656,9 @@ class Reader {
     bar.dataset.state = state;
     btn.innerHTML = state === 'paused' ? icons.play : icons.pause;
     btn.setAttribute('aria-label', state === 'paused' ? 'Resume' : 'Pause');
-    bar.querySelector('.tts-label').textContent = state === 'loading' ? 'Preparing…' : state === 'paused' ? 'Paused' : 'Reading aloud';
+    // Say so when the chosen voice couldn't be reached and another one is reading.
+    const other = this.speech.fellBack ? (this.speech.usingFallback ? ' · device voice' : ' · Google voice') : '';
+    bar.querySelector('.tts-label').textContent = (state === 'loading' ? 'Preparing…' : state === 'paused' ? 'Paused' : 'Reading aloud') + other;
   }
 
   // ------------------------------------------------------------------ teardown

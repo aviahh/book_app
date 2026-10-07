@@ -242,6 +242,7 @@ export class Speech {
     this.unlock(); // in case this call is itself inside a tap
     this.lang = lang;
     this.providers = providersFor(lang, this.voicePref());
+    this.preferred = this.providers[0];
     this.usingFallback = false;
     this.#start(text);
   }
@@ -251,11 +252,18 @@ export class Speech {
     if (this.provider !== 'edge') return Promise.resolve(urlFor(this.provider, this.chunks[i], this.lang));
     if (!this.blobs.has(i)) {
       const url = urlFor(this.provider, this.chunks[i], this.lang);
+      const get = () =>
+        Promise.race([
+          fetch(url),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
+        ])
+          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? URL.createObjectURL(b) : Promise.reject(new Error('no audio'))));
+      // A passing hiccup (weak Wi-Fi, a busy moment at the voice service)
+      // shouldn't swap the voice: try again before giving up on it.
       this.blobs.set(
         i,
-        fetch(url)
-          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
-          .then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? URL.createObjectURL(b) : Promise.reject(new Error('no audio')))),
+        get().catch(() => new Promise((r) => setTimeout(r, 600)).then(get)),
       );
     }
     return this.blobs.get(i);
@@ -296,7 +304,7 @@ export class Speech {
     if (this.chunks[1]) this.#load(b, 1, gen).catch(() => {});
     a.play()
       .then(() => gen === this.gen && this.state === 'loading' && this.#set('playing'))
-      .catch(() => gen === this.gen && this.#onError());
+      .catch((e) => gen === this.gen && this.#playFailed(e));
   }
 
   pause() {
@@ -347,12 +355,24 @@ export class Speech {
       return;
     }
     if (gen !== this.gen) return;
-    next.play().catch(() => gen === this.gen && this.#onError());
+    next.play().catch((e) => gen === this.gen && this.#playFailed(e));
     // Fetch the following piece into the element that just finished.
     const after = this.index + 1;
     const spare = this.players[1 - this.cur];
     delete spare.dataset.real;
     if (after < this.chunks.length) this.#load(spare, after, gen).catch(() => {});
+  }
+
+  /** True when this passage is not in the chosen voice (it had to fall back). */
+  get fellBack() {
+    return this.usingFallback || (!!this.provider && this.provider !== this.preferred);
+  }
+
+  #playFailed(e) {
+    // The browser wants a fresh tap before playing sound: pause, so the Play
+    // button continues in the same voice, rather than switching voices.
+    if (e && e.name === 'NotAllowedError') return this.#set('paused');
+    this.#onError();
   }
 
   // A voice service failed: continue from the current piece with the next
