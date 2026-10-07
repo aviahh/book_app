@@ -1,4 +1,4 @@
-import { getSettings, setSetting, LANGUAGES, DEFAULTS } from '../settings.js';
+import { getSettings, setSetting, onSettingsChange, LANGUAGES, DEFAULTS } from '../settings.js';
 import { icons } from '../icons.js';
 import { shell, esc, toast } from './common.js';
 import { backupSizes, createBackup, backupFileName, restoreBackup } from '../backup.js';
@@ -20,8 +20,17 @@ export async function mountSettings(view, _p, nav) {
   const select = (key, options) => `
     <select data-select="${key}">${options.map(([v, l]) => `<option value="${v}" ${getSettings()[key] === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
 
-  const row = (title, desc, control) => `
-    <div class="set-row"><div class="set-text"><span class="set-title">${title}</span>${desc ? `<span class="set-desc">${desc}</span>` : ''}</div>${control}</div>`;
+  // Rows can depend on another setting: `sub` indents them under the row
+  // they belong to, and `dyn` (settings → { desc, off }) updates their
+  // description, or switches them off, whenever settings change.
+  const live = new Map();
+  const row = (title, desc, control, { sub = false, dyn } = {}) => {
+    const id = dyn ? `d${live.size}` : '';
+    if (dyn) live.set(id, dyn);
+    const d = dyn ? dyn(getSettings()) : { desc };
+    return `
+    <div class="set-row${sub ? ' sub' : ''}${d.off ? ' off' : ''}"${id ? ` data-live="${id}"` : ''}><div class="set-text"><span class="set-title">${title}</span><span class="set-desc"${d.desc ? '' : ' hidden'}>${d.desc || ''}</span></div>${control}</div>`;
+  };
 
   let storage = '';
   try {
@@ -47,37 +56,86 @@ export async function mountSettings(view, _p, nav) {
 
       <h2>Turning pages</h2>
       <div class="set-group">
+        ${row('Page-turn effect', 'How pages turn in landscape (two pages). In portrait, pages scroll.', select('pageTurn', [['bend', 'Soft page'], ['fold', 'Paper corner'], ['curl', 'Classic 3D'], ['slide', 'Slide'], ['none', 'None']]))}
+        ${row('While zoomed in', '', select('zoomTurn', [['stay', 'Stay zoomed'], ['zoomOut', 'Zoom out first'], ['animate', 'Turn while zoomed']]), {
+          sub: true,
+          dyn: (s) => ({
+            desc:
+              s.zoomTurn === 'stay'
+                ? 'Goes straight to the top of the next pages without leaving the zoom.'
+                : s.zoomTurn === 'zoomOut'
+                  ? 'Zooms back out first, then turns the page.'
+                  : s.pageTurn === 'none'
+                    ? 'With no page-turn effect, the pages simply switch, still zoomed in.'
+                    : 'Plays the page-turn effect without leaving the zoom.',
+          }),
+        })}
         ${row('Turn with a single tap on hidden arrows', 'When off, the first tap reveals the side arrows and a second tap turns the page.', toggle('singleTapArrows'))}
-        ${row('Double arrows « » jump by', 'Chapters uses the book’s table of contents. Books without one jump by pages.', seg('jumpMode', [['chapters', 'Chapters'], ['pages', 'Pages']]))}
-        ${row('Pages per double-arrow jump', 'Used for books without a table of contents, or when jumping by pages.', stepper('jumpPages', 2, 50))}
-        ${row('Turning pages while zoomed in', 'Landscape only. “Stay zoomed” jumps straight to the top of the next pages without leaving the zoom.', select('zoomTurn', [['stay', 'Stay zoomed, jump to top'], ['zoomOut', 'Zoom out, then turn'], ['animate', 'Turn while zoomed']]))}
-        ${row('Page-turn effect', 'Used in landscape (two pages). In portrait, pages scroll.', select('pageTurn', [['bend', 'Soft page'], ['fold', 'Paper corner'], ['curl', 'Classic 3D'], ['slide', 'Slide'], ['none', 'None']]))}
+        ${row('Double arrows « » jump by', '', seg('jumpMode', [['chapters', 'Chapters'], ['pages', 'Pages']]), {
+          dyn: (s) => ({
+            desc: s.jumpMode === 'pages' ? 'Always a fixed number of pages, set below.' : 'From chapter to chapter, using the book’s table of contents.',
+          }),
+        })}
+        ${row('Pages per jump', '', stepper('jumpPages', 2, 50), {
+          sub: true,
+          dyn: (s) => ({
+            desc: s.jumpMode === 'pages' ? 'Each « » jump skips this many pages.' : 'If a book has no table of contents, « » skips this many pages instead.',
+          }),
+        })}
       </div>
 
       <h2>Reading view</h2>
       <div class="set-group">
         ${row('Full screen while reading', 'Hides the browser bars and other apps when a book opens.', toggle('fullscreen'))}
         ${row('Toolbar position', '', seg('toolbarPosition', [['top', 'Top'], ['bottom', 'Bottom']]))}
-        ${row('Hide controls after', 'Toolbar and arrows fade away after this many seconds.', stepper('autoHideSeconds', 2, 10, 0.5))}
-        ${row('Page tone', 'Warm and Night are easier on the eyes in the evening.', seg('pageTone', [['original', 'Original'], ['warm', 'Warm'], ['night', 'Night']]))}
-        ${row('Surroundings', 'The colour around the book.', seg('backdrop', [['night', 'Ink'], ['walnut', 'Walnut'], ['linen', 'Linen']]))}
+        ${row('Hide toolbar and arrows after', 'They fade away after this many seconds; tap to bring them back.', stepper('autoHideSeconds', 2, 10, 0.5), { sub: true })}
+        ${row('Page tone', '', seg('pageTone', [['original', 'Original'], ['warm', 'Warm'], ['night', 'Night']]), {
+          dyn: (s) => ({
+            desc:
+              s.pageTone === 'original'
+                ? 'Pages look exactly as printed.'
+                : s.pageTone === 'warm'
+                  ? 'Softer, warmer paper for the evening. Pictures keep their colours.'
+                  : 'Light text on dark paper for reading in the dark. Pictures keep their colours.',
+          }),
+        })}
+        ${row('Surroundings', 'The colour around the book.', seg('backdrop', [['night', 'Ink'], ['walnut', 'Walnut'], ['linen', 'Linen']]), { sub: true })}
       </div>
 
-      <h2>Language</h2>
+      <h2>Translation</h2>
       <div class="set-group">
-        ${row('Close translation bubble after', 'The bubble from double-tapping a word closes by itself. Touching it restarts the countdown.', stepper('popupSeconds', 0, 15, 0.5))}
-        ${row('Translate words into', 'Double-tap any word while reading.', select('translateTo', LANGUAGES))}
-        ${row('Voice', 'For reading passages aloud. Microsoft is the natural voice from EZ_shortcut (Jenny in English, Hila in Hebrew).', seg('speechVoice', [['microsoft', 'Microsoft'], ['google', 'Google']]))}
-        ${row('Read-aloud language', 'Auto detects from the text itself.', select('speechLang', [['auto', 'Automatic'], ...LANGUAGES]))}
+        ${row('Translate words into', 'Double-tap any word while reading; drag the handles to translate a phrase.', select('translateTo', LANGUAGES))}
+        ${row('Close the bubble after', '', stepper('popupSeconds', 0, 15, 0.5), {
+          sub: true,
+          dyn: (s) => ({ desc: s.popupSeconds === 0 ? 'The bubble stays until you tap elsewhere.' : 'Touching the bubble restarts the countdown.' }),
+        })}
+      </div>
+
+      <h2>Read aloud</h2>
+      <div class="set-group">
+        ${row('Voice', '', seg('speechVoice', [['microsoft', 'Microsoft'], ['google', 'Google']]), {
+          dyn: (s) => ({
+            desc:
+              s.speechVoice === 'microsoft'
+                ? 'Natural voices, as in EZ_shortcut (Jenny in English, Hila in Hebrew). Falls back to Google if unavailable.'
+                : 'Google’s voice.',
+          }),
+        })}
+        ${row('Language', 'Automatic detects it from the text itself.', select('speechLang', [['auto', 'Automatic'], ...LANGUAGES]), { sub: true })}
       </div>
 
       <h2>Backup</h2>
       <div class="set-group">
-        ${row('What to back up', `Progress only: your library list, reading progress, statistics and settings (tiny). With books: the PDFs too (${sizes.count} book${sizes.count === 1 ? '' : 's'}, ${mb(sizes.bookBytes)}).`, `
+        ${row('What to back up', 'Progress only: your library list, reading progress, statistics and settings. With books: the PDFs as well.', `
           <div class="segmented" role="radiogroup">
             <button role="radio" data-bk="0" aria-checked="true">Progress only</button><button role="radio" data-bk="1" aria-checked="false">With books</button>
           </div>`)}
-        ${row('Back up now', 'Choose Google Drive, iCloud Drive or Files in the share menu to keep it safe, or it is saved to Downloads.', '<button class="btn subtle" data-act="backup">Back up</button>')}
+        ${row('Back up now', '', '<button class="btn subtle" data-act="backup">Back up</button>', {
+          sub: true,
+          dyn: () => ({
+            desc: `${withBooks ? `Progress and ${sizes.count} book${sizes.count === 1 ? '' : 's'} (${mb(sizes.bookBytes)}).` : 'Progress only, a tiny file.'} Choose Google Drive, iCloud Drive or Files in the share menu, or it is saved to Downloads.`,
+          }),
+        })}
         ${row('Restore from a backup', 'Pick a Folio backup file (Drive, Files, Downloads…). It merges with this device: newer progress wins, nothing is deleted. Progress for books not on this device is applied when you add them.', '<button class="btn subtle" data-act="restore">Restore</button><input type="file" data-restore hidden>')}
       </div>
 
@@ -89,6 +147,20 @@ export async function mountSettings(view, _p, nav) {
         ${row('Relaunch Folio', `Closes and reopens the app, picking up the newest version if there is one. Version: ${buildLabel()}.`, '<button class="btn subtle" data-act="relaunch">Relaunch</button>')}
       </div>
     </section>`;
+
+  // Keep dependent rows in step with the settings they depend on.
+  const refresh = () => {
+    const s = getSettings();
+    for (const el of content.querySelectorAll('[data-live]')) {
+      const d = live.get(el.dataset.live)(s);
+      const desc = el.querySelector('.set-desc');
+      desc.textContent = d.desc || '';
+      desc.hidden = !d.desc;
+      el.classList.toggle('off', !!d.off);
+      for (const c of el.querySelectorAll('button, select, input')) c.disabled = !!d.off;
+    }
+  };
+  const unwatch = onSettingsChange(() => (content.isConnected ? refresh() : unwatch()));
 
   content.addEventListener('click', (e) => {
     const r = e.target.closest('[data-key]');
@@ -115,6 +187,7 @@ export async function mountSettings(view, _p, nav) {
     if (bk) {
       withBooks = bk.dataset.bk === '1';
       for (const b of content.querySelectorAll('[data-bk]')) b.setAttribute('aria-checked', String(b === bk));
+      refresh();
     }
     const bu = e.target.closest('[data-act="backup"]');
     if (bu) backup(bu, withBooks);

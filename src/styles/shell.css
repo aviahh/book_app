@@ -605,6 +605,31 @@
 .set-row + .set-row {
   border-top: 1px solid var(--line);
 }
+/* A setting that belongs to the one above it: indented, joined to it by a
+   guide line, with no divider between them. */
+.set-row.sub {
+  position: relative;
+  padding-left: 48px;
+  border-top: 0;
+}
+.set-row.sub::before {
+  content: '';
+  position: absolute;
+  left: 26px;
+  top: 0;
+  height: 50%;
+  width: 12px;
+  border-left: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  border-bottom-left-radius: 7px;
+  opacity: 0.4;
+}
+.set-row.off {
+  opacity: 0.45;
+}
+.set-row.off * {
+  pointer-events: none;
+}
 .set-text {
   display: flex;
   flex-direction: column;

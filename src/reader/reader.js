@@ -703,9 +703,11 @@ class Reader {
       this.busy = false;
     }
     this.cache.demoteAll();
-    if (TURNERS[style]) {
+    if (TURNERS[style] && Math.abs(target - from) > 1) {
+      await this.#riffle(target > from ? 1 : -1, target);
+    } else if (TURNERS[style]) {
       const turn = this.#beginTurn(target > from ? 1 : -1, target);
-      await turn.flip.animateTo(1, Math.abs(target - from) > 1 ? 620 : 680);
+      await turn.flip.animateTo(1, 680);
       await this.#endTurn(turn, true);
     } else if (style === 'slide') {
       await this.#slide(target > from ? 1 : -1, target);
@@ -751,6 +753,95 @@ class Reader {
     this.bookEl.style.transition = '';
     this.#drop(old);
     for (const f of fresh) f.style.transition = '';
+    this.busy = false;
+  }
+
+  /**
+   * A jump of several spreads: a few sheets riffle over one after another,
+   * then the sheet that lands on the target. Always the same number of
+   * sheets, however far the jump. Only the first and last sheets carry real
+   * pages (what was showing, and where we land); the ones between are plain
+   * paper, which is all the eye catches at this speed.
+   */
+  async #riffle(dir, target) {
+    this.busy = true;
+    const SHEETS = 4; // including the first and the last
+    const DUR = 460; // per sheet
+    const GAP = DUR * 0.5; // the next sheet lifts as the previous one passes the spine
+    const book = this.bookEl;
+    const from = this.spread;
+    const cur = spreadPages(this.mode, from, this.total);
+    const next = spreadPages(this.mode, target, this.total);
+    const fwd = dir > 0;
+    // Underneath: the page that stays (covered by the landing sheets) and the
+    // target page on the other side, hidden by blank paper until the last sheet lifts.
+    const stay = fwd ? cur.left : cur.right;
+    const reveal = fwd ? next.right : next.left;
+    const under = [this.#slot('left', fwd ? stay : reveal, { text: false }), this.#slot('right', fwd ? reveal : stay, { text: false })];
+    const veil = document.createElement('div');
+    veil.className = `slot ${fwd ? 'right' : 'left'}`;
+    veil.innerHTML = '<div class="page paper-blank"></div>';
+    const old = [...book.children];
+    book.append(...under, veil);
+    // Sheets that have landed go below this marker, sheets in the air above it.
+    const marker = document.createComment('riffle');
+    book.append(marker);
+    const offFrom = this.#offsetFor(from);
+    const offTo = this.#offsetFor(target);
+    const Turner = TURNERS[this.settings.pageTurn] || Flipper;
+    const realPages = [];
+    const flips = [];
+    const partsOf = (f) => [f.cast, f.leaf, f.root].filter(Boolean);
+    const sheet = (i) => {
+      const first = i === 0;
+      const last = i === SHEETS - 1;
+      const fp = first ? (fwd ? cur.right : cur.left) : null;
+      const bp = last ? (fwd ? next.left : next.right) : null;
+      // Pages in between: plain paper with the impression of printed lines
+      // (Soft page slices real page images, so it gets plain paper).
+      const filler = () => {
+        if (Turner === BendFlipper) return null;
+        const d = document.createElement('div');
+        d.className = 'page paper-blank filler';
+        return d;
+      };
+      const front = fp ? this.#pageEl(fp, { text: false }) : first ? null : filler();
+      const back = bp ? this.#pageEl(bp, { text: false }) : last ? null : filler();
+      realPages.push(...[front, back].filter(Boolean));
+      const flip = new Turner({
+        book,
+        mode: this.mode,
+        dir,
+        pw: this.pw,
+        ph: this.ph,
+        front,
+        back,
+        spineFrom: false,
+        spineTo: false,
+        onProgress: first ? (t) => this.#setOffset(offFrom + (offTo - offFrom) * t) : () => {},
+      });
+      // Slide under the sheets already in the air (they lie on top of it).
+      marker.after(...partsOf(flip));
+      flips.push(flip);
+      if (last) veil.remove(); // nothing left to cover the target page
+      return flip.animateTo(1, DUR).then(() => {
+        // Landed: it now lies on top of the earlier landed sheets.
+        marker.before(...partsOf(flip));
+      });
+    };
+    const runs = [];
+    for (let i = 0; i < SHEETS; i++) {
+      runs.push(sheet(i));
+      if (i < SHEETS - 1) await new Promise((r) => setTimeout(r, GAP));
+    }
+    // Drop the old resting spread once the sheets cover it.
+    this.#drop(old);
+    await Promise.all(runs);
+    this.spread = target;
+    await this.#renderSpread(target, { replace: [...book.children].filter((c) => c !== marker) });
+    for (const f of flips) f.destroy();
+    this.#drop([...realPages, ...flips.flatMap(partsOf)]);
+    marker.remove();
     this.busy = false;
   }
 
