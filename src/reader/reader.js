@@ -1091,8 +1091,16 @@ class Reader {
         return this.speech.toggle();
       case 'ttsStop':
         return this.speech.stop();
-      case 'popSpeak':
-        return pronounce(this.popWord.text, this.popWord.lang);
+      case 'popSpeak': {
+        // A ring spins and fills around the speaker until the sound starts.
+        const btn = this.el.querySelector('.pop-word');
+        btn.classList.remove('loaded');
+        btn.classList.add('loading');
+        return pronounce(this.popWord.text, this.popWord.lang).then(() => {
+          btn.classList.remove('loading');
+          btn.classList.add('loaded'); // the ring closes and fades
+        });
+      }
       case 'popCopy':
         navigator.clipboard?.writeText(this.popWord.text).then(() => this.#toast('Copied'));
         return;
@@ -1546,7 +1554,7 @@ class Reader {
     pop.classList.toggle('phrase', /\s/.test(word));
     pop.innerHTML = `
       <div class="pop-main">
-        <button class="pop-word" data-act="popSpeak" aria-label="Pronounce ${esc(word)}">${icons.speaker}<span>${esc(word)}</span></button>
+        <button class="pop-word" data-act="popSpeak" aria-label="Pronounce ${esc(word)}"><span class="pop-ico">${icons.speaker}<svg class="pop-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16"/></svg></span><span>${esc(word)}</span></button>
         <div class="pop-tr" dir="${rtl ? 'rtl' : 'auto'}">${loading ? '<span class="dots"><i></i><i></i><i></i></span>' : error ? '<span class="muted">No connection</span>' : tl}</div>
       </div>
       ${alts}

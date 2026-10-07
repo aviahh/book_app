@@ -777,7 +777,7 @@
 .pop-word {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 11px;
   color: #3aa0ff;
   font-size: 1.35rem;
   font-weight: 650;
@@ -786,6 +786,62 @@
 .pop-word svg {
   width: 24px;
   height: 24px;
+}
+/* Pronunciation loading: a ring that spins and fills around the speaker,
+   until the sound starts; then it closes and fades. */
+.pop-ico {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+.pop-ico > svg {
+  display: block;
+}
+.pop-word svg.pop-ring {
+  position: absolute;
+  left: -6px;
+  top: -6px;
+  width: 36px;
+  height: 36px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+}
+.pop-ring circle {
+  stroke-dasharray: 100.5;
+  stroke-dashoffset: 100.5;
+  transform-origin: 18px 18px;
+  transform: rotate(-90deg);
+}
+.pop-word.loading svg.pop-ring {
+  opacity: 0.9;
+  transition: none;
+  animation: pop-ring-spin 1s linear infinite;
+}
+.pop-word.loading .pop-ring circle {
+  animation: pop-ring-fill 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) forwards;
+}
+.pop-word.loaded .pop-ring circle {
+  stroke-dashoffset: 0;
+}
+@keyframes pop-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pop-ring-fill {
+  from {
+    stroke-dashoffset: 100.5;
+  }
+  to {
+    stroke-dashoffset: 12; /* nearly full while still waiting */
+  }
 }
 .pop-tr {
   font-size: 1.35rem;
@@ -994,7 +1050,7 @@
 .no-flexgap .toolbar > * + * {
   margin-left: 2px;
 }
-.no-flexgap .pop-word svg {
+.no-flexgap .pop-word .pop-ico {
   margin-right: 8px;
 }
 

@@ -407,16 +407,36 @@ export class Speech {
   }
 }
 
-/** One-shot pronunciation of a single word (Google voice; device voice if offline). */
+/**
+ * One-shot pronunciation of a single word (Google voice; device voice if
+ * offline). The promise settles when the sound starts (or gives up), so the
+ * caller can show that it's loading until then.
+ */
 let wordAudio;
+let wordToken = 0;
 export function pronounce(word, lang) {
   wordAudio ??= new Audio();
-  wordAudio.src = ttsUrl(word, lang);
-  wordAudio.play().catch(() => {
-    if ('speechSynthesis' in window) {
+  const a = wordAudio;
+  const token = ++wordToken;
+  return new Promise((resolve) => {
+    let timer;
+    const done = () => {
+      clearTimeout(timer);
+      if (token === wordToken) a.onplaying = null;
+      resolve();
+    };
+    timer = setTimeout(done, 10000);
+    a.onplaying = done;
+    a.src = ttsUrl(word, lang);
+    a.play().catch(() => {
+      if (token !== wordToken) return done();
+      a.onplaying = null;
+      if (!('speechSynthesis' in window)) return done();
       const u = new SpeechSynthesisUtterance(word);
       u.lang = lang === 'iw' ? 'he-IL' : lang;
+      u.onstart = done;
+      u.onerror = done;
       speechSynthesis.speak(u);
-    }
+    });
   });
 }
