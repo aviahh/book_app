@@ -162,12 +162,16 @@ function providersFor(lang, prefer) {
 
 const urlFor = (provider, text, lang) => (provider === 'edge' ? edgeUrl(text, EDGE_VOICES[lang]) : ttsUrl(text, lang));
 
-// A tenth of a second of silence (8 kHz, 8-bit WAV), played inside a tap to
-// "unlock" audio elements: iOS only lets an element play later, without a tap,
-// once it has played something during one.
+// A tenth of a second of silence, played inside a tap to "unlock" audio
+// elements: iOS only lets an element play later, without a tap, once it has
+// played something during one. It is in the same quality as the voices
+// (24 kHz, 16-bit): some devices keep the audio output at the quality of the
+// first sound an element plays, and an earlier telephone-quality (8 kHz)
+// silence made the voices that followed sound muffled.
 const SILENCE = (() => {
-  const n = 800;
-  const b = new Uint8Array(44 + n);
+  const rate = 24000;
+  const n = (rate / 10) * 2; // 0.1 s of 16-bit samples
+  const b = new Uint8Array(44 + n); // zero-filled: 16-bit silence
   const dv = new DataView(b.buffer);
   const str = (o, t) => t.split('').forEach((c, i) => (b[o + i] = c.charCodeAt(0)));
   str(0, 'RIFF');
@@ -175,19 +179,21 @@ const SILENCE = (() => {
   str(8, 'WAVE');
   str(12, 'fmt ');
   dv.setUint32(16, 16, true);
-  dv.setUint16(20, 1, true);
-  dv.setUint16(22, 1, true);
-  dv.setUint32(24, 8000, true);
-  dv.setUint32(28, 8000, true);
-  dv.setUint16(32, 1, true);
-  dv.setUint16(34, 8, true);
+  dv.setUint16(20, 1, true); // PCM
+  dv.setUint16(22, 1, true); // mono
+  dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate * 2, true); // bytes per second
+  dv.setUint16(32, 2, true); // bytes per frame
+  dv.setUint16(34, 16, true); // bits per sample
   str(36, 'data');
   dv.setUint32(40, n, true);
-  b.fill(128, 44);
   let bin = '';
   for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
   return 'data:audio/wav;base64,' + btoa(bin);
 })();
+
+/** Apple devices need the unlock above; other browsers allow audio after any earlier tap. */
+const NEEDS_UNLOCK = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 /**
  * A pausable, chunk-by-chunk speech player.
@@ -220,7 +226,7 @@ export class Speech {
 
   /** Call from inside a tap (e.g. the speaker button): lets audio start later without one. */
   unlock() {
-    if (this.active) return;
+    if (this.active || !NEEDS_UNLOCK) return;
     for (const a of this.players) {
       delete a.dataset.real;
       a.src = SILENCE;
