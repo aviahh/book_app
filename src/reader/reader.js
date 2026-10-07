@@ -5,7 +5,7 @@
 // Portrait ("single"): pages stacked in a vertical strip and scrolled.
 // Both can be pinch-zoomed and panned.
 import { getBook, getBookFile, updateBook } from '../db.js';
-import { openPdf, buildTextLayer, renderPageCanvas, releaseCanvas, canvasOk, ZOOM_PIXELS } from '../pdf.js';
+import { openPdf, buildTextLayer, renderPageCanvas, releaseCanvas, canvasOk, ZOOM_PIXELS, LOW_MEMORY } from '../pdf.js';
 import { getSettings, onSettingsChange } from '../settings.js';
 import { icons } from '../icons.js';
 import { Speech, translate, pronounce, guessLang, isRtl } from '../google.js';
@@ -346,7 +346,7 @@ class Reader {
     return p;
   }
 
-  /** Links on page n (table of contents entries, web links), positions in % of the page. */
+  /** Links on page n (table of contents and other links within the book), positions in % of the page. */
   #pageLinks(n) {
     this.linkCache = this.linkCache || new Map();
     if (!this.linkCache.has(n)) {
@@ -368,8 +368,9 @@ class Reader {
                   const index = typeof ref === 'number' ? ref : ref ? await this.doc.getPageIndex(ref) : -1;
                   if (index >= 0) link.page = index + 1;
                 } catch (e) {}
-              } else if (a.url && /^(https?:|mailto:)/i.test(a.url)) link.url = a.url;
-              if (!link.page && !link.url) continue;
+              }
+              // Only links within the book: web links never take you out of the app.
+              if (!link.page) continue;
               // (PDF.js 6 dropped convertToViewportRectangle; points work in both.)
               const [x1, y1] = vp.convertToViewportPoint(a.rect[0], a.rect[1]);
               const [x2, y2] = vp.convertToViewportPoint(a.rect[2], a.rect[3]);
@@ -396,8 +397,7 @@ class Reader {
       for (const l of links) {
         const d = document.createElement('div');
         d.className = 'pdf-link';
-        if (l.page) d.dataset.page = l.page;
-        if (l.url) d.dataset.url = l.url;
+        d.dataset.page = l.page;
         Object.assign(d.style, { left: `${l.left}%`, top: `${l.top}%`, width: `${l.width}%`, height: `${l.height}%` });
         layer.append(d);
       }
@@ -424,7 +424,6 @@ class Reader {
   #followLink(el) {
     el.classList.add('hit');
     setTimeout(() => el.classList.remove('hit'), 450);
-    if (el.dataset.url) return window.open(el.dataset.url, '_blank', 'noopener');
     this.go(spreadOf(this.mode, +el.dataset.page));
   }
 
@@ -757,58 +756,55 @@ class Reader {
   }
 
   /**
-   * A jump of several spreads: a few sheets riffle over one after another,
-   * then the sheet that lands on the target. Always the same number of
-   * sheets, however far the jump. Only the first and last sheets carry real
-   * pages (what was showing, and where we land); the ones between are plain
-   * paper, which is all the eye catches at this speed.
+   * A jump of several spreads: a thick bundle of pages turns over together,
+   * fanning slightly so its edges show. Always the same bundle, however far
+   * the jump. Only the outer sheets carry real pages (what was showing, and
+   * where we land); the ones inside are paper with the impression of print.
    */
   async #riffle(dir, target) {
     this.busy = true;
-    const SHEETS = 4; // including the first and the last
-    const DUR = 460; // per sheet
-    const GAP = DUR * 0.5; // the next sheet lifts as the previous one passes the spine
+    const SHEETS = LOW_MEMORY ? 5 : 7; // the whole bundle, outer sheets included
+    const DUR = 760; // each sheet's turn: about as slow as one heavy page
+    const FAN = 0.15; // how far the bundle fans open mid-turn (share of a full turn)
     const book = this.bookEl;
     const from = this.spread;
     const cur = spreadPages(this.mode, from, this.total);
     const next = spreadPages(this.mode, target, this.total);
     const fwd = dir > 0;
-    // Underneath: the page that stays (covered by the landing sheets) and the
-    // target page on the other side, hidden by blank paper until the last sheet lifts.
+    // Underneath: the page that stays (the bundle lands on it) and the target
+    // page on the other side, uncovered as the bundle lifts.
     const stay = fwd ? cur.left : cur.right;
     const reveal = fwd ? next.right : next.left;
     const under = [this.#slot('left', fwd ? stay : reveal, { text: false }), this.#slot('right', fwd ? reveal : stay, { text: false })];
-    const veil = document.createElement('div');
-    veil.className = `slot ${fwd ? 'right' : 'left'}`;
-    veil.innerHTML = '<div class="page paper-blank"></div>';
     const old = [...book.children];
-    book.append(...under, veil);
+    book.append(...under);
     // Sheets that have landed go below this marker, sheets in the air above it.
     const marker = document.createComment('riffle');
     book.append(marker);
     const offFrom = this.#offsetFor(from);
     const offTo = this.#offsetFor(target);
     const Turner = TURNERS[this.settings.pageTurn] || Flipper;
-    const realPages = [];
-    const flips = [];
     const partsOf = (f) => [f.cast, f.leaf, f.root].filter(Boolean);
-    const sheet = (i) => {
+    // Pages inside the bundle: paper with the impression of printed lines
+    // (Soft page slices real page images, so it gets plain paper).
+    const filler = () => {
+      if (Turner === BendFlipper) return null;
+      const d = document.createElement('div');
+      d.className = 'page paper-blank filler';
+      return d;
+    };
+    const realPages = [];
+    const sheets = [];
+    for (let i = 0; i < SHEETS; i++) {
       const first = i === 0;
       const last = i === SHEETS - 1;
       const fp = first ? (fwd ? cur.right : cur.left) : null;
       const bp = last ? (fwd ? next.left : next.right) : null;
-      // Pages in between: plain paper with the impression of printed lines
-      // (Soft page slices real page images, so it gets plain paper).
-      const filler = () => {
-        if (Turner === BendFlipper) return null;
-        const d = document.createElement('div');
-        d.className = 'page paper-blank filler';
-        return d;
-      };
       const front = fp ? this.#pageEl(fp, { text: false }) : first ? null : filler();
       const back = bp ? this.#pageEl(bp, { text: false }) : last ? null : filler();
       realPages.push(...[front, back].filter(Boolean));
-      const flip = new Turner({
+      const sheet = { crossed: false, landed: false };
+      sheet.flip = new Turner({
         book,
         mode: this.mode,
         dir,
@@ -818,29 +814,60 @@ class Reader {
         back,
         spineFrom: false,
         spineTo: false,
-        onProgress: first ? (t) => this.#setOffset(offFrom + (offTo - offFrom) * t) : () => {},
+        onProgress: (t) => {
+          if (first) this.#setOffset(offFrom + (offTo - offFrom) * t);
+          // Past the spine the bundle is upside down: the sheets that were
+          // underneath are now on top, so each one moves up as it passes the middle.
+          if (!sheet.crossed && t >= 0.5 && sheet.flip) {
+            sheet.crossed = true;
+            book.append(...partsOf(sheet.flip));
+          }
+        },
       });
-      // Slide under the sheets already in the air (they lie on top of it).
-      marker.after(...partsOf(flip));
-      flips.push(flip);
-      if (last) veil.remove(); // nothing left to cover the target page
-      return flip.animateTo(1, DUR).then(() => {
-        // Landed: it now lies on top of the earlier landed sheets.
-        marker.before(...partsOf(flip));
-      });
-    };
-    const runs = [];
-    for (let i = 0; i < SHEETS; i++) {
-      runs.push(sheet(i));
-      if (i < SHEETS - 1) await new Promise((r) => setTimeout(r, GAP));
+      // One shadow for the whole bundle, cast by the sheet nearest the page it uncovers.
+      if (!last) for (const sh of [sheet.flip.cast, sheet.flip.root && sheet.flip.root.querySelector('.under')]) if (sh) sh.style.visibility = 'hidden';
+      // Each later sheet lies under the earlier ones.
+      marker.after(...partsOf(sheet.flip));
+      sheets.push(sheet);
     }
-    // Drop the old resting spread once the sheets cover it.
-    this.#drop(old);
-    await Promise.all(runs);
+    // One clock for the whole bundle, so the sheets stay together even when
+    // frames are slow.
+    const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+    await new Promise((resolve) => {
+      const start = performance.now();
+      let dropped = false;
+      const frame = (now) => {
+        const el = now - start;
+        const k = Math.min(1, el / DUR);
+        const e = ease(k);
+        // The sheets lift and land together and fan open in between, each a
+        // little behind the one above it.
+        const fan = FAN * Math.sin(Math.PI * k);
+        let done = true;
+        sheets.forEach((sh, i) => {
+          if (sh.landed) return;
+          sh.flip.set(Math.max(0, e - (fan * i) / (SHEETS - 1)));
+          if (k >= 1) {
+            sh.landed = true;
+            marker.before(...partsOf(sh.flip)); // lies on top of the sheets landed before it
+          } else done = false;
+        });
+        // The old resting spread is covered once the bundle is moving.
+        if (!dropped && el > 120) {
+          dropped = true;
+          this.#drop(old);
+        }
+        if (done) {
+          if (!dropped) this.#drop(old);
+          resolve();
+        } else requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    });
     this.spread = target;
     await this.#renderSpread(target, { replace: [...book.children].filter((c) => c !== marker) });
-    for (const f of flips) f.destroy();
-    this.#drop([...realPages, ...flips.flatMap(partsOf)]);
+    for (const sh of sheets) sh.flip.destroy();
+    this.#drop([...realPages, ...sheets.flatMap((sh) => partsOf(sh.flip))]);
     marker.remove();
     this.busy = false;
   }
