@@ -12,6 +12,7 @@ import { mountSettings } from './views/settings.js';
 import { mountReader } from './reader/reader.js';
 import { requestPersistence } from './db.js';
 import { getSettings, onSettingsChange } from './settings.js';
+import { initRouter, nav, currentRoute } from './router.js';
 
 function applyTheme({ theme }) {
   const root = document.documentElement;
@@ -35,11 +36,6 @@ const routes = [
   [/^/, () => [mountHome, {}]],
 ];
 
-export function nav(hash) {
-  if (location.hash === hash) render();
-  else location.hash = hash;
-}
-
 async function render() {
   const my = ++token;
   if (cleanup) {
@@ -51,7 +47,7 @@ async function render() {
     cleanup = null;
   }
   app.replaceChildren();
-  const hash = location.hash || '#/';
+  const hash = currentRoute();
   for (const [re, fn] of routes) {
     const m = hash.match(re);
     if (!m) continue;
@@ -71,5 +67,4 @@ async function render() {
   }
 }
 
-window.addEventListener('hashchange', render);
-render();
+initRouter(render);

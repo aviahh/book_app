@@ -710,7 +710,7 @@ class Reader {
     const s = this.settings;
     switch (act) {
       case 'close':
-        return this.nav('#/library');
+        return this.nav.back(); // to wherever the book was opened from
       case 'settings':
         return this.nav(`#/settings?from=${encodeURIComponent(location.hash)}`);
       case 'thumbs':
