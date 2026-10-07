@@ -408,35 +408,61 @@ export class Speech {
 }
 
 /**
- * One-shot pronunciation of a single word (Google voice; device voice if
- * offline). The promise settles when the sound starts (or gives up), so the
- * caller can show that it's loading until then.
+ * Pronunciation of the word (or phrase) in the translation bubble: Google's
+ * voice, or the device's own if that can't play. `onState` hears 'loading',
+ * 'playing' and finally 'idle' (finished, stopped, or replaced by a newer one).
  */
 let wordAudio;
+let wordUtterance = null;
 let wordToken = 0;
-export function pronounce(word, lang) {
+let wordState = 'idle';
+let wordListener = null;
+
+function setWordState(state) {
+  wordState = state;
+  if (wordListener) wordListener(state);
+  if (state === 'idle') wordListener = null;
+}
+
+export function pronounce(word, lang, onState) {
+  stopPronounce();
   wordAudio ??= new Audio();
   const a = wordAudio;
   const token = ++wordToken;
-  return new Promise((resolve) => {
-    let timer;
-    const done = () => {
-      clearTimeout(timer);
-      if (token === wordToken) a.onplaying = null;
-      resolve();
-    };
-    timer = setTimeout(done, 10000);
-    a.onplaying = done;
-    a.src = ttsUrl(word, lang);
-    a.play().catch(() => {
-      if (token !== wordToken) return done();
-      a.onplaying = null;
-      if (!('speechSynthesis' in window)) return done();
-      const u = new SpeechSynthesisUtterance(word);
-      u.lang = lang === 'iw' ? 'he-IL' : lang;
-      u.onstart = done;
-      u.onerror = done;
-      speechSynthesis.speak(u);
-    });
+  const mine = () => token === wordToken;
+  wordListener = onState || null;
+  setWordState('loading');
+  // Give up on a sound that never arrives.
+  const timer = setTimeout(() => mine() && wordState === 'loading' && stopPronounce(), 10000);
+  a.onplaying = () => mine() && (clearTimeout(timer), setWordState('playing'));
+  a.onended = () => mine() && (clearTimeout(timer), setWordState('idle'));
+  a.src = ttsUrl(word, lang);
+  a.play().catch(() => {
+    if (!mine()) return;
+    a.onplaying = a.onended = null;
+    if (!('speechSynthesis' in window)) return (clearTimeout(timer), setWordState('idle'));
+    const u = (wordUtterance = new SpeechSynthesisUtterance(word));
+    u.lang = lang === 'iw' ? 'he-IL' : lang;
+    u.onstart = () => mine() && (clearTimeout(timer), setWordState('playing'));
+    u.onend = u.onerror = () => mine() && (clearTimeout(timer), setWordState('idle'));
+    speechSynthesis.speak(u);
   });
 }
+
+/** Stop the pronunciation now (does nothing if none is loading or playing). */
+export function stopPronounce() {
+  wordToken++;
+  if (wordAudio) {
+    wordAudio.onplaying = wordAudio.onended = null;
+    wordAudio.pause();
+    wordAudio.removeAttribute('src');
+  }
+  if (wordUtterance) {
+    wordUtterance = null;
+    try {
+      speechSynthesis.cancel();
+    } catch (e) {}
+  }
+  if (wordState !== 'idle') setWordState('idle');
+}
+

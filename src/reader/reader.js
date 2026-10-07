@@ -8,7 +8,7 @@ import { getBook, getBookFile, updateBook } from '../db.js';
 import { openPdf, buildTextLayer, renderPageCanvas, releaseCanvas, canvasOk, ZOOM_PIXELS, LOW_MEMORY } from '../pdf.js';
 import { getSettings, onSettingsChange } from '../settings.js';
 import { icons } from '../icons.js';
-import { Speech, translate, pronounce, guessLang, isRtl } from '../google.js';
+import { Speech, translate, pronounce, stopPronounce, guessLang, isRtl } from '../google.js';
 import { trackReading } from '../stats.js';
 import { PageCache } from './pageCache.js';
 import { Flipper } from './flipper.js';
@@ -1092,14 +1092,20 @@ class Reader {
       case 'ttsStop':
         return this.speech.stop();
       case 'popSpeak': {
-        // A ring spins and fills around the speaker until the sound starts.
-        const btn = this.el.querySelector('.pop-word');
-        btn.classList.remove('loaded');
-        btn.classList.add('loading');
-        return pronounce(this.popWord.text, this.popWord.lang).then(() => {
-          btn.classList.remove('loading');
-          btn.classList.add('loaded'); // the ring closes and fades
+        const cur = this.popSound && this.popSound.state;
+        if (cur === 'loading') return; // already on its way: extra taps don't queue more
+        if (cur === 'playing') return stopPronounce(); // the button is a stop button now
+        const snd = (this.popSound = { word: this.popWord.text, state: 'loading', was: 'idle' });
+        pronounce(this.popWord.text, this.popWord.lang, (state) => {
+          if (this.popSound !== snd) return;
+          snd.was = snd.state;
+          snd.state = state;
+          this.#paintSound();
+          // The bubble stays open while the word is loading or playing.
+          if (state === 'idle') this.#armPopupClose();
+          else clearTimeout(this.popCloseTimer);
         });
+        return this.#paintSound();
       }
       case 'popCopy':
         navigator.clipboard?.writeText(this.popWord.text).then(() => this.#toast('Copied'));
@@ -1551,10 +1557,15 @@ class Reader {
           .join('')}</div>`
       : '';
     const rtl = result ? isRtl(this.settings.translateTo) : false;
+    // A different word or phrase in the bubble: the old one stops sounding.
+    if (this.popSound && this.popSound.word !== word) {
+      this.popSound = null;
+      stopPronounce();
+    }
     pop.classList.toggle('phrase', /\s/.test(word));
     pop.innerHTML = `
       <div class="pop-main">
-        <button class="pop-word" data-act="popSpeak" aria-label="Pronounce ${esc(word)}"><span class="pop-ico">${icons.speaker}<svg class="pop-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16"/></svg></span><span>${esc(word)}</span></button>
+        <button class="pop-word" data-act="popSpeak" aria-label="Pronounce ${esc(word)}"><span class="pop-ico"><span class="ic-say">${icons.speaker}</span><span class="ic-stop">${icons.stop}</span><svg class="pop-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16"/></svg></span><span>${esc(word)}</span></button>
         <div class="pop-tr" dir="${rtl ? 'rtl' : 'auto'}">${loading ? '<span class="dots"><i></i><i></i><i></i></span>' : error ? '<span class="muted">No connection</span>' : tl}</div>
       </div>
       ${alts}
@@ -1563,6 +1574,7 @@ class Reader {
         <span class="pop-credit">translated by <b>Google</b></span>
       </div>`;
     pop.hidden = false;
+    this.#paintSound();
     // Position above the word, or below if there is no room.
     const pw = pop.offsetWidth;
     const ph = pop.offsetHeight;
@@ -1576,10 +1588,28 @@ class Reader {
     pop.style.setProperty('--arrow-x', `${Math.max(18, Math.min(pw - 18, cx - left))}px`);
   }
 
+  /**
+   * The pronounce button: a ring spins and fills around the speaker while the
+   * sound loads; while it plays the button shows Stop; then it's a speaker
+   * again (tap to hear it once more).
+   */
+  #paintSound() {
+    const btn = this.pop.querySelector('.pop-word');
+    const snd = this.popSound;
+    if (!btn) return;
+    const state = snd ? snd.state : 'idle';
+    btn.classList.toggle('loading', state === 'loading');
+    btn.classList.toggle('playing', state === 'playing');
+    // The ring closes and fades once loading ends.
+    btn.classList.toggle('loaded', state !== 'loading' && !!snd && snd.was === 'loading');
+    btn.setAttribute('aria-label', state === 'playing' ? 'Stop' : `Pronounce ${btn.textContent.trim()}`);
+  }
+
   /** Close the bubble by itself after the chosen delay (Settings; 0 = never). */
   #armPopupClose() {
     clearTimeout(this.popCloseTimer);
     this.popCloseTimer = null;
+    if (this.popSound && this.popSound.state !== 'idle') return; // not while the word is sounding
     const secs = this.settings.popupSeconds;
     if (secs > 0) this.popCloseTimer = setTimeout(() => this.#closePopup(), secs * 1000);
   }
@@ -1588,6 +1618,9 @@ class Reader {
     clearTimeout(this.popCloseTimer);
     this.popCloseTimer = null;
     this.#hideHandles();
+    // Closing the bubble also stops its pronunciation.
+    this.popSound = null;
+    stopPronounce();
     if (this.pop.hidden) return;
     this.pop.hidden = true;
     this.popWord = null;

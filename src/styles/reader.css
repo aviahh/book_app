@@ -796,7 +796,17 @@
   width: 24px;
   height: 24px;
 }
-.pop-ico > svg {
+.pop-ico > span,
+.pop-ico > span > svg {
+  display: block;
+}
+.pop-ico .ic-stop {
+  display: none;
+}
+.pop-word.playing .ic-say {
+  display: none;
+}
+.pop-word.playing .ic-stop {
   display: block;
 }
 .pop-word svg.pop-ring {
