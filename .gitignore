@@ -3,6 +3,7 @@ node_modules/
 dist/
 dev-dist/
 public/pdfjs/
+public/pdfjs-legacy/
 
 # design reference screenshots (third-party copyrighted material)
 reference/

@@ -92,6 +92,13 @@ export function initRouter(onRender) {
       return render();
     }
     const s = e.state?.stack;
+    if (!e.state && norm(location.hash) !== ROOT) {
+      // Not a Back press: the address itself was changed (typed or linked).
+      stack = defaultStack(norm(location.hash));
+      onRootEntry = false;
+      history.replaceState({ stack }, '', top());
+      return render();
+    }
     if (s?.length > 1) {
       // Forward button: back onto a top entry.
       stack = s;

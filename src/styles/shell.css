@@ -14,7 +14,8 @@
   display: flex;
   align-items: center;
   gap: 1rem;
-  padding: calc(14px + var(--safe-top)) clamp(16px, 4vw, 48px) 14px;
+  padding: calc(14px + var(--safe-top)) max(16px, min(4vw, 48px)) 14px;
+  background: var(--bg);
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
   backdrop-filter: blur(16px) saturate(1.2);
@@ -67,7 +68,7 @@
 .content {
   max-width: 1180px;
   margin: 0 auto;
-  padding: clamp(20px, 4vw, 44px) clamp(16px, 4vw, 48px) calc(60px + var(--safe-bottom));
+  padding: max(20px, min(4vw, 44px)) max(16px, min(4vw, 48px)) calc(60px + var(--safe-bottom));
 }
 
 /* ---------- home ---------- */
@@ -75,7 +76,7 @@
   margin: 0;
   font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(2.4rem, 5vw, 3.6rem);
+  font-size: max(2.4rem, min(5vw, 3.6rem));
   line-height: 1.05;
   letter-spacing: -0.01em;
 }
@@ -83,10 +84,10 @@
 .hero {
   display: grid;
   grid-template-columns: minmax(150px, 230px) 1fr;
-  gap: clamp(24px, 5vw, 56px);
+  gap: max(24px, min(5vw, 56px));
   align-items: center;
-  margin: clamp(24px, 4vw, 40px) 0;
-  padding: clamp(22px, 4vw, 40px);
+  margin: max(24px, min(4vw, 40px)) 0;
+  padding: max(22px, min(4vw, 40px));
   border-radius: 24px;
   background: var(--surface);
   box-shadow: var(--shadow-1);
@@ -106,7 +107,7 @@
   margin: 0;
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: clamp(1.8rem, 3.6vw, 2.7rem);
+  font-size: max(1.8rem, min(3.6vw, 2.7rem));
   line-height: 1.1;
 }
 .hero-info .author {
@@ -334,7 +335,7 @@
   margin: 0;
   font-family: var(--font-display);
   font-weight: 500;
-  font-size: clamp(2.3rem, 4.5vw, 3.2rem);
+  font-size: max(2.3rem, min(4.5vw, 3.2rem));
   line-height: 1;
 }
 .lib-count {
@@ -506,6 +507,7 @@
   z-index: 50;
   display: none;
   place-items: center;
+  background: var(--bg);
   background: color-mix(in srgb, var(--bg) 70%, transparent);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
@@ -746,4 +748,65 @@
 }
 .back-pill:active {
   transform: scale(0.97);
+}
+
+/* ---------- older browsers (iOS 12 / Safari 12) ---------- */
+
+/* color-mix() with a variable is invalid there at computed time (→ transparent),
+   so only use it where supported. */
+@supports not (background: color-mix(in srgb, red 50%, blue)) {
+  .topbar {
+    background: var(--bg) !important;
+  }
+  .drop-hint {
+    background: var(--bg) !important;
+    opacity: 0.94;
+  }
+}
+
+/* No aspect-ratio (Safari < 15): let the cover image give the shape. */
+@supports not (aspect-ratio: 1) {
+  .book3d {
+    height: auto !important;
+  }
+  .book3d img {
+    height: auto;
+  }
+  .shelf-book .book3d {
+    width: 128px;
+  }
+  .card-cover {
+    display: block;
+  }
+  .card-cover .book3d {
+    width: 100%;
+  }
+}
+
+/* No flexbox gap (Safari < 14.1): margins instead (class set by polyfills.js). */
+.no-flexgap .topbar > * + *,
+.no-flexgap .lib-tools > * + *,
+.no-flexgap .shelf-row > * + *,
+.no-flexgap .tabs > * + *,
+.no-flexgap .search > * + *,
+.no-flexgap .card-info > * + *,
+.no-flexgap .bars > * + * {
+  margin-left: 10px;
+}
+.no-flexgap .shelf-row > * + * {
+  margin-left: 26px;
+}
+.no-flexgap .tabs > * + *,
+.no-flexgap .bars > * + * {
+  margin-left: 4px;
+}
+.no-flexgap .btn svg,
+.no-flexgap .wordmark .mark,
+.no-flexgap .back-pill svg,
+.no-flexgap .menu button svg {
+  margin-right: 8px;
+}
+.no-flexgap .set-text > * + *,
+.no-flexgap .import-card > * + * {
+  margin-top: 4px;
 }

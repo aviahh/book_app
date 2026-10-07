@@ -258,7 +258,7 @@
   inset: 0;
   width: 100% !important;
   height: 100% !important;
-  overflow: clip;
+  overflow: hidden;
   line-height: 1;
   text-align: initial;
   -webkit-text-size-adjust: none;
@@ -270,7 +270,8 @@
   --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
   --min-font-size-inv: calc(1 / var(--min-font-size));
 }
-.textLayer :is(span, br) {
+.textLayer span,
+.textLayer br {
   color: transparent;
   position: absolute;
   white-space: pre;
@@ -638,7 +639,9 @@
   min-width: 96px;
   font-weight: 520;
 }
-.tts-bar[data-state='ready'] :is(.tts-wave, [data-act='ttsToggle'], [data-act='ttsStop']) {
+.tts-bar[data-state='ready'] .tts-wave,
+.tts-bar[data-state='ready'] [data-act='ttsToggle'],
+.tts-bar[data-state='ready'] [data-act='ttsStop'] {
   display: none;
 }
 .tts-bar[data-state='ready'] .tts-label {
@@ -940,4 +943,24 @@
 }
 .reader[data-tone='night'] .bend-face {
   filter: invert(0.9) hue-rotate(180deg) brightness(1.05) contrast(0.88) sepia(0.15);
+}
+
+/* ---------- older browsers: no flexbox gap (class set by polyfills.js) ---------- */
+.no-flexgap .chrome > * + * {
+  margin-top: 10px;
+}
+.no-flexgap .reader.toolbar-top .chrome > * + * {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+.no-flexgap .tts-bar > * + *,
+.no-flexgap .ts-track > * + *,
+.no-flexgap .pop-main > * + * {
+  margin-left: 12px;
+}
+.no-flexgap .toolbar > * + * {
+  margin-left: 2px;
+}
+.no-flexgap .pop-word svg {
+  margin-right: 8px;
 }

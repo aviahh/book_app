@@ -1,25 +1,32 @@
 // Thin wrapper around PDF.js: open documents, render pages to canvases,
 // build text layers, and import new books into the library.
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
-import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
+//
+// Two engines: PDF.js 6 for current browsers, PDF.js 2.16 for older ones
+// (iOS 12 / Safari 12 cannot run PDF.js 6). Each is loaded only when needed.
 import { addBook } from './db.js';
 
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+/** PDF.js 6 needs roughly Safari 16.4+; regex lookbehind arrived in the same release. */
+function supportsModernEngine() {
+  try {
+    new RegExp('(?<=a)b');
+    return typeof structuredClone === 'function' && typeof Array.prototype.findLast === 'function';
+  } catch (e) {
+    return false;
+  }
+}
 
-const ASSETS = new URL('pdfjs/', document.baseURI).href;
+let enginePromise;
+export function pdfEngine() {
+  if (!enginePromise) {
+    enginePromise = (supportsModernEngine() ? import('./pdfEngineModern.js') : Promise.reject(new Error('old browser'))).catch(
+      () => import('./pdfEngineLegacy.js'),
+    );
+  }
+  return enginePromise;
+}
 
 export async function openPdf(data) {
-  const task = pdfjs.getDocument({
-    data,
-    cMapUrl: ASSETS + 'cmaps/',
-    cMapPacked: true,
-    standardFontDataUrl: ASSETS + 'standard_fonts/',
-    wasmUrl: ASSETS + 'wasm/',
-  });
-  const doc = await task.promise;
-  // PDF.js 6 moved teardown to the loading task.
-  doc.destroy ??= () => task.destroy();
-  return doc;
+  return (await pdfEngine()).open(data);
 }
 
 // Canvas memory is the main constraint on tablets and phones. iOS Safari is
@@ -55,14 +62,8 @@ export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels
 /** Build a selectable/hit-testable text layer sized to `cssWidth`. */
 export async function buildTextLayer(page, container, cssWidth) {
   const base = page.getViewport({ scale: 1 });
-  const scale = cssWidth / base.width;
-  const viewport = page.getViewport({ scale });
-  container.style.setProperty('--total-scale-factor', scale);
-  container.style.setProperty('--scale-round-x', '1px');
-  container.style.setProperty('--scale-round-y', '1px');
-  const layer = new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container, viewport });
-  await layer.render();
-  return layer;
+  const viewport = page.getViewport({ scale: cssWidth / base.width });
+  return (await pdfEngine()).textLayer(page, container, viewport);
 }
 
 const toBlob = (canvas, type, q) => new Promise((r) => canvas.toBlob(r, type, q));

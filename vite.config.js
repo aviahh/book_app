@@ -3,7 +3,12 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   base: './',
-  build: { target: 'es2020' },
+  build: {
+    // Old iPads stay on iOS 12 (Safari 12): compile syntax down for it, and
+    // make the CSS output understandable to it as well.
+    target: ['safari12', 'ios12', 'chrome64', 'firefox67', 'edge79'],
+    cssTarget: ['safari12', 'ios12', 'chrome64', 'firefox67', 'edge79'],
+  },
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
