@@ -1,10 +1,10 @@
 // Renders pages once at the current display size and hands out cheap copies,
 // so the same page can appear in a slot and on a turning leaf at the same time.
 // Rendering is serialized; visible pages jump the queue ahead of prefetches.
-import { renderPageCanvas } from '../pdf.js';
+import { renderPageCanvas, releaseCanvas, IS_IOS } from '../pdf.js';
 
 export class PageCache {
-  constructor(doc, limit = 14) {
+  constructor(doc, limit = IS_IOS ? 8 : 14) {
     this.doc = doc;
     this.limit = limit;
     this.width = 0;
@@ -49,6 +49,7 @@ export class PageCache {
       const old = this.map.get(oldest);
       this.map.delete(oldest);
       this.pending = this.pending.filter((e) => e !== old);
+      old.promise.then(releaseCanvas, () => {});
     }
     this.#pump();
     return entry.promise;
@@ -77,7 +78,8 @@ export class PageCache {
 
   /** Fill `target` canvas with page n (copy of the cached master). */
   async paint(n, target, prio = 0) {
-    const src = await this.get(n, prio);
+    let src = await this.get(n, prio);
+    if (!src.width) src = await this.get(n, prio); // evicted and freed meanwhile: render again
     target.width = src.width;
     target.height = src.height;
     target.getContext('2d').drawImage(src, 0, 0);

@@ -5,7 +5,7 @@
 // Portrait ("single"): pages stacked in a vertical strip and scrolled.
 // Both can be pinch-zoomed and panned.
 import { getBook, getBookFile, updateBook } from '../db.js';
-import { openPdf, buildTextLayer } from '../pdf.js';
+import { openPdf, buildTextLayer, renderPageCanvas, releaseCanvas, ZOOM_PIXELS } from '../pdf.js';
 import { getSettings, onSettingsChange } from '../settings.js';
 import { icons } from '../icons.js';
 import { Speech, translate, pronounce, guessLang, isRtl } from '../google.js';
@@ -76,6 +76,7 @@ class Reader {
     this.spread = 0; // spread index (double) or page index (single)
     this.busy = false; // a page turn is animating
     this.renderZoom = 1;
+    this.hiResToken = 0;
     this.pointers = new Map();
     this.stripPages = new Map();
     this.cleanups = [];
@@ -205,11 +206,11 @@ class Reader {
     this.#clearHighlights();
     this.#closePopup();
     this.renderZoom = 1;
-    this.cache.setWidth(pw, { limit: 14, maxPixels: undefined });
+    this.cache.setWidth(pw);
     this.spread = spreadOf(mode, page);
 
     if (mode === 'double') {
-      this.stripEl.replaceChildren();
+      this.#drop([...this.stripEl.children]);
       this.stripPages.clear();
       const w = pw * 2;
       this.bookEl.style.width = `${w}px`;
@@ -219,8 +220,7 @@ class Reader {
       this.camera.set(1, 0, 0);
       this.#renderSpread();
     } else {
-      this.bookEl.replaceChildren();
-      this.stripEl.replaceChildren();
+      this.#drop([...this.bookEl.children, ...this.stripEl.children]);
       this.stripPages.clear();
       const stripH = STRIP_PAD * 2 + this.total * (ph + STRIP_GAP) - STRIP_GAP;
       Object.assign(this.stripEl.style, { width: `${pw}px`, height: `${stripH}px`, left: `${(W - pw) / 2}px` });
@@ -301,7 +301,8 @@ class Reader {
     this.#setOffset(this.#offsetFor(index));
     this.#prefetch(index);
     if (!replace) {
-      this.bookEl.replaceChildren(...els);
+      this.#drop([...this.bookEl.children]);
+      this.bookEl.append(...els);
       return Promise.resolve();
     }
     this.bookEl.append(...els);
@@ -310,7 +311,7 @@ class Reader {
     return Promise.race([Promise.all(paints), timeout])
       .then(() => new Promise(requestAnimationFrame))
       .then(() => {
-        for (const old of replace) old.remove();
+        this.#drop(replace);
       });
   }
 
@@ -360,7 +361,7 @@ class Reader {
     const last = this.#pageAtY(bottom + margin);
     for (const [n, el] of this.stripPages) {
       if (n < first - 1 || n > last + 1) {
-        el.remove();
+        this.#drop([el]);
         this.stripPages.delete(n);
       }
     }
@@ -391,16 +392,57 @@ class Reader {
     this.hiResTimer = setTimeout(() => this.#hiRes(), 260);
   }
 
-  /** After zooming settles, re-render visible pages sharp at the new size. */
-  #hiRes() {
+  /** Canvases of the pages currently on screen. */
+  #visibleCanvases() {
+    if (this.mode === 'double') return [...this.bookEl.querySelectorAll(':scope > .slot .page canvas')];
+    const cam = this.camera;
+    const first = this.#pageAtY(-cam.ty / cam.s);
+    const last = this.#pageAtY((-cam.ty + this.H) / cam.s);
+    const out = [];
+    for (let n = first; n <= last; n++) {
+      const c = this.stripPages.get(n)?.querySelector('.page canvas');
+      if (c) out.push(c);
+    }
+    return out;
+  }
+
+  /**
+   * After zooming settles, re-draw the on-screen pages sharp at the new size.
+   * Only visible pages get the big version (memory is tight, especially on
+   * iOS); everything else keeps the normal-size render from the cache.
+   */
+  async #hiRes() {
     if (this.pinch || this.busy) return (this.hiResTimer = setTimeout(() => this.#hiRes(), 260));
-    const want = Math.min(3, Math.max(1, Math.round(this.camera.s * 2) / 2));
-    if (want === this.renderZoom) return;
+    const want = Math.min(MAX_ZOOM, Math.max(1, Math.round(this.camera.s * 2) / 2));
     this.renderZoom = want;
-    this.cache.setWidth(this.pw * want, want > 1 ? { limit: 6, maxPixels: 16_000_000 } : { limit: 14, maxPixels: undefined });
-    for (const c of this.cameraEl.querySelectorAll('.page canvas')) {
+    const token = ++this.hiResToken;
+    for (const c of this.#visibleCanvases()) {
+      if (token !== this.hiResToken) return;
       const n = +c.parentElement.dataset.page;
-      this.cache.paint(n, c, 0).catch(() => {});
+      if ((+c.dataset.zoom || 1) === want) continue;
+      if (want === 1) {
+        await this.cache.paint(n, c, 0).catch(() => {});
+        delete c.dataset.zoom;
+        continue;
+      }
+      try {
+        const tmp = await renderPageCanvas(await this.cache.page(n), this.pw * want, { maxPixels: ZOOM_PIXELS, maxDpr: 3 });
+        if (token === this.hiResToken && c.isConnected && tmp.width) {
+          c.width = tmp.width;
+          c.height = tmp.height;
+          c.getContext('2d').drawImage(tmp, 0, 0);
+          c.dataset.zoom = want;
+        }
+        releaseCanvas(tmp);
+      } catch {}
+    }
+  }
+
+  /** Remove elements and free their page images immediately. */
+  #drop(els) {
+    for (const el of els) {
+      for (const c of el.querySelectorAll?.('canvas') || []) releaseCanvas(c);
+      el.remove();
     }
   }
 
@@ -443,6 +485,10 @@ class Reader {
   #afterMove() {
     this.#updateIndicator();
     this.#saveProgress();
+    if (this.camera.zoomed) {
+      clearTimeout(this.hiResTimer);
+      this.hiResTimer = setTimeout(() => this.#hiRes(), 120);
+    }
   }
 
   /** Move by a number of pages. */
@@ -527,7 +573,7 @@ class Reader {
     }
     await new Promise((r) => setTimeout(r, 380));
     this.bookEl.style.transition = '';
-    for (const o of old) o.remove();
+    this.#drop(old);
     for (const f of fresh) f.style.transition = '';
     this.busy = false;
   }
@@ -588,9 +634,7 @@ class Reader {
       },
     });
     const pages = [...under.flatMap((u) => [...u.querySelectorAll('.page')]), front, back].filter(Boolean);
-    Promise.race([Promise.all(pages.map((p) => p.painted)), new Promise((r) => setTimeout(r, 300))]).then(() => {
-      for (const o of old) o.remove();
-    });
+    Promise.race([Promise.all(pages.map((p) => p.painted)), new Promise((r) => setTimeout(r, 300))]).then(() => this.#drop(old));
     this.turn = { flip, dir, from, target };
     return this.turn;
   }
@@ -1242,7 +1286,7 @@ class Reader {
     this.lock.destroy();
     this.thumbs.destroy();
     for (const fn of this.cleanups) fn();
-    this.el.remove();
+    this.#drop([this.el]);
     this.doc.destroy();
   }
 }

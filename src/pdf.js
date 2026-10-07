@@ -22,8 +22,18 @@ export async function openPdf(data) {
   return doc;
 }
 
-// Canvas memory is the main constraint on tablets, so cap the pixel budget.
-const MAX_PIXELS = 7_000_000;
+// Canvas memory is the main constraint on tablets and phones. iOS Safari is
+// strict: past a total canvas-memory limit it silently refuses new canvases,
+// so Apple devices get a smaller budget.
+export const IS_IOS = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const MAX_PIXELS = IS_IOS ? 4_500_000 : 7_000_000;
+/** Budget for the sharp re-render of an on-screen page while zoomed in. */
+export const ZOOM_PIXELS = IS_IOS ? 9_000_000 : 16_000_000;
+
+/** Free a canvas's pixel memory right away (iOS doesn't do it promptly on its own). */
+export function releaseCanvas(c) {
+  if (c) c.width = c.height = 0;
+}
 
 /** Render a page so that it is `cssWidth` CSS pixels wide. */
 export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels = MAX_PIXELS } = {}) {

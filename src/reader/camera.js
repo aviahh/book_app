@@ -41,18 +41,46 @@ export class Camera {
     return { s, tx: fit(b.x, b.w, this.W, tx), ty: fit(b.y, b.h, this.H, ty) };
   }
 
+  /**
+   * Move the camera. Values update immediately; the screen is updated once per
+   * frame (finger events can arrive several times per frame), which keeps
+   * scrolling smooth on slower browsers such as iOS Safari.
+   */
   set(s, tx, ty) {
     ({ s, tx, ty } = this.clamp(s, tx, ty));
     const changed = s !== this.s || tx !== this.tx || ty !== this.ty;
     Object.assign(this, { s, tx, ty });
-    this.el.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
-    if (changed) this.onChange?.();
+    if (changed) {
+      this.dirty = true;
+      this.frame ??= requestAnimationFrame(() => this.flush());
+    }
     return changed;
   }
 
+  /** Write the pending position to the screen now. */
+  flush() {
+    cancelAnimationFrame(this.frame);
+    this.frame = null;
+    if (!this.dirty) return;
+    this.dirty = false;
+    // While moving, keep the content on its own GPU layer so it glides; once
+    // still, drop that so the browser re-draws it sharp at the new zoom.
+    if (!this.moving) {
+      this.moving = true;
+      this.el.style.willChange = 'transform';
+    }
+    clearTimeout(this.settle);
+    this.settle = setTimeout(() => {
+      this.moving = false;
+      this.el.style.willChange = 'auto';
+    }, 220);
+    this.el.style.transform = `translate3d(${this.tx}px, ${this.ty}px, 0) scale(${this.s})`;
+    this.onChange?.();
+  }
+
   refresh() {
-    this.set(this.s, this.tx, this.ty);
-    this.el.style.transform = `translate(${this.tx}px, ${this.ty}px) scale(${this.s})`;
+    this.dirty = true;
+    this.flush();
   }
 
   /** Zoom to `s` keeping the content under view point (px, py) fixed. */
@@ -86,6 +114,7 @@ export class Camera {
         const e = ease(k);
         // Interpolate through the clamp-free path, then clamp the result.
         this.set(from.s + (to.s - from.s) * e, from.tx + (to.tx - from.tx) * e, from.ty + (to.ty - from.ty) * e);
+        this.flush(); // already inside a frame
         if (k < 1) this.raf = requestAnimationFrame(step);
         else {
           this.raf = null;
@@ -104,7 +133,8 @@ export class Camera {
       const dt = Math.min(40, now - last);
       last = now;
       const moved = this.panBy(vx * dt, vy * dt);
-      const decay = Math.pow(0.994, dt);
+      this.flush(); // already inside a frame
+      const decay = Math.pow(0.995, dt);
       vx *= decay;
       vy *= decay;
       if (moved && Math.hypot(vx, vy) > 0.02) this.raf = requestAnimationFrame(step);
