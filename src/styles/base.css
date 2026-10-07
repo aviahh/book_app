@@ -92,6 +92,9 @@ select {
 
 button {
   cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 0;
   background: none;
   border: 0;
   padding: 0;

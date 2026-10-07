@@ -41,7 +41,20 @@ export async function open(data) {
 export async function textLayer(page, container, viewport) {
   const p = await pdfjs();
   const textContent = await page.getTextContent();
-  const task = p.renderTextLayer({ textContent, container, viewport, textDivs: [] });
+  const textDivs = [];
+  const task = p.renderTextLayer({ textContent, container, viewport, textDivs });
   await task.promise;
+  // 2.16 places text in pixels for this page's own shape, but the page image
+  // is stretched to the book's page box (the cover can be a different shape),
+  // so the text would drift away from the drawn words further down the page.
+  // Percentages stretch with the box, as in newer PDF.js.
+  const stretch = container.clientHeight / viewport.height;
+  for (const div of textDivs) {
+    const left = parseFloat(div.style.left);
+    const top = parseFloat(div.style.top);
+    if (!isNaN(left)) div.style.left = `${(left / viewport.width) * 100}%`;
+    if (!isNaN(top)) div.style.top = `${(top / viewport.height) * 100}%`;
+    if (stretch && Math.abs(stretch - 1) > 0.01) div.style.transform = `${div.style.transform || ''} scaleY(${stretch})`;
+  }
   return task;
 }

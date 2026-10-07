@@ -59,6 +59,12 @@ export async function mountReader(root, { id }, nav) {
   if (!book) return nav('#/library');
   const blob = await getBookFile(id);
   const doc = await openPdf(new Uint8Array(await blob.arrayBuffer()));
+  // Size the pages from an inside page: the cover is often a slightly
+  // different shape, and every page is drawn into the same box.
+  try {
+    const vp = (await doc.getPage(Math.max(1, Math.ceil(doc.numPages / 2)))).getViewport({ scale: 1 });
+    book.pageAspect = vp.width / vp.height;
+  } catch {}
   const reader = new Reader(root, book, doc, nav);
   return () => reader.destroy();
 }
@@ -186,7 +192,7 @@ class Reader {
     const H = this.el.clientHeight;
     if (!W || !H) return;
     const mode = this.lock.locked ? this.lock.lockedMode : W > H ? 'double' : 'single';
-    const aspect = this.book.aspect || 0.7;
+    const aspect = this.book.pageAspect || this.book.aspect || 0.7;
     let pw;
     if (mode === 'double') {
       const vpad = Math.max(18, H * 0.035);

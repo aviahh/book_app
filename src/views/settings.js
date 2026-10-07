@@ -67,6 +67,7 @@ export async function mountSettings(view, _p, nav) {
         ${row('Folio', 'Books stay on this device. Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
         ${storage ? row('Storage', storage, '') : ''}
         ${row('Reset preferences', '', '<button class="btn subtle" data-act="reset">Reset</button>')}
+        ${row('Relaunch Folio', `Closes and reopens the app, picking up the newest version if there is one. Version: ${buildLabel()}.`, '<button class="btn subtle" data-act="relaunch">Relaunch</button>')}
       </div>
     </section>`;
 
@@ -91,6 +92,8 @@ export async function mountSettings(view, _p, nav) {
       setSetting(key, v);
       st.querySelector('output').textContent = shown(key, v);
     }
+    const rl = e.target.closest('[data-act="relaunch"]');
+    if (rl) relaunch(rl);
     if (e.target.closest('[data-act="reset"]')) {
       for (const [k, v] of Object.entries(DEFAULTS)) setSetting(k, v);
       mountSettings((view.replaceChildren(), view), _p, nav);
@@ -101,3 +104,39 @@ export async function mountSettings(view, _p, nav) {
     if (sel) setSetting(sel.dataset.select, sel.value);
   });
 }
+
+function buildLabel() {
+  const d = new Date(__BUILD_TIME__);
+  return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/** Fetch any newer version, then fade out and reload the app from its start page. */
+async function relaunch(button) {
+  button.disabled = true;
+  button.textContent = 'Relaunching…';
+  try {
+    const reg = navigator.serviceWorker && (await navigator.serviceWorker.getRegistration());
+    if (reg) {
+      await Promise.race([reg.update(), wait(6000)]);
+      const incoming = reg.installing || reg.waiting;
+      if (incoming) {
+        // A new version is downloading: let it finish and take over first.
+        await Promise.race([
+          new Promise((resolve) => {
+            if (incoming.state === 'activated') return resolve();
+            incoming.addEventListener('statechange', () => incoming.state === 'activated' && resolve());
+            if (incoming.state === 'installed') incoming.postMessage({ type: 'SKIP_WAITING' });
+          }),
+          wait(15000),
+        ]);
+      }
+    }
+  } catch (e) {}
+  const app = document.getElementById('app');
+  app.style.transition = 'opacity 0.3s ease';
+  app.style.opacity = '0';
+  await wait(320);
+  location.replace(location.pathname + location.search);
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));

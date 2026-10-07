@@ -3,6 +3,10 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   base: './',
+  // Shown in Settings, so it's easy to tell whether the device has the latest version.
+  define: {
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   build: {
     // Old iPads stay on iOS 12 (Safari 12): compile syntax down for it, and
     // make the CSS output understandable to it as well.
