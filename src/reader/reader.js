@@ -99,6 +99,7 @@ class Reader {
     });
     this.thumbs.cache.setTone(this.settings.pageTone);
     this.#bindInput();
+    this.#loadChapters();
     // Keep the page itself still while reading (iOS likes to scroll/zoom it).
     document.documentElement.classList.add('reading');
     window.scrollTo(0, 0);
@@ -182,6 +183,60 @@ class Reader {
   }
 
   // ------------------------------------------------------------------ layout
+
+  /**
+   * Chapter start pages from the book's table of contents (PDF bookmarks),
+   * so the double arrows can jump chapter to chapter. Stays null for books
+   * without one.
+   */
+  async #loadChapters() {
+    try {
+      const outline = await this.doc.getOutline();
+      const starts = new Set();
+      const walk = async (items) => {
+        for (const it of items || []) {
+          try {
+            let dest = it.dest;
+            if (typeof dest === 'string') dest = await this.doc.getDestination(dest);
+            const ref = dest && dest[0];
+            const index = typeof ref === 'number' ? ref : ref ? await this.doc.getPageIndex(ref) : -1;
+            if (index >= 0) starts.add(index + 1);
+          } catch (e) {}
+          await walk(it.items);
+        }
+      };
+      await walk(outline);
+      const list = [...starts].filter((p) => p >= 1 && p <= this.total).sort((a, b) => a - b);
+      this.chapters = list.length >= 2 ? list : null;
+    } catch (e) {
+      this.chapters = null;
+    }
+    this.#updateJumpLabels();
+  }
+
+  #useChapters() {
+    return !!this.chapters && this.settings.jumpMode !== 'pages';
+  }
+
+  #updateJumpLabels() {
+    const ch = this.#useChapters();
+    this.el.querySelector('[data-act="jumpBack"]').setAttribute('aria-label', ch ? 'Previous chapter' : 'Back several pages');
+    this.el.querySelector('[data-act="jumpFwd"]').setAttribute('aria-label', ch ? 'Next chapter' : 'Forward several pages');
+  }
+
+  /** Double arrows: to the next / previous chapter if the book has a table of contents, else a fixed number of pages. */
+  #jump(dir) {
+    if (this.#useChapters()) {
+      const shown = visiblePages(spreadPages(this.mode, this.spread, this.total));
+      const lo = Math.min(...shown);
+      const hi = Math.max(...shown);
+      // Back: the start of this chapter, or of the previous one if its start is already on screen.
+      const target = dir > 0 ? this.chapters.find((p) => p > hi) : [...this.chapters].reverse().find((p) => p < lo);
+      if (target) return this.go(spreadOf(this.mode, target));
+      if (dir < 0) return this.go(0); // before the first chapter: the very beginning
+    }
+    return this.step(dir * this.settings.jumpPages);
+  }
 
   #currentPage() {
     return this.mode ? visiblePages(spreadPages(this.mode, this.spread, this.total))[0] : this.startPage;
@@ -816,9 +871,9 @@ class Reader {
       case 'next':
         return this.step(1);
       case 'jumpBack':
-        return this.step(-s.jumpPages);
+        return this.#jump(-1);
       case 'jumpFwd':
-        return this.step(s.jumpPages);
+        return this.#jump(1);
       case 'goto':
         return this.#openGoto(btn);
       case 'speak':

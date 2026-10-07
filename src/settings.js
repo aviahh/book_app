@@ -6,6 +6,7 @@ export const DEFAULTS = {
   // Off = first tap reveals the hidden side arrows, a second tap turns the page.
   // On  = tapping the (even invisible) arrows turns the page right away.
   singleTapArrows: false,
+  jumpMode: 'chapters', // double arrows: 'chapters' (when the book has a table of contents) | 'pages'
   jumpPages: 5,
   toolbarPosition: 'bottom', // 'top' | 'bottom'
   autoHideSeconds: 3.5,
