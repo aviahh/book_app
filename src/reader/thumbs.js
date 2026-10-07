@@ -99,5 +99,6 @@ export class ThumbStrip {
 
   destroy() {
     this.io.disconnect();
+    this.cache.destroy();
   }
 }

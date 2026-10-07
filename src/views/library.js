@@ -38,6 +38,7 @@ export async function mountLibrary(view) {
 
   async function load() {
     books = await listBooks();
+    await covers.load(books);
     draw();
   }
 

@@ -34,9 +34,35 @@ export async function openPdf(data) {
 // strict: past a total canvas-memory limit it silently refuses new canvases,
 // so Apple devices get a smaller budget.
 export const IS_IOS = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const MAX_PIXELS = IS_IOS ? 4_500_000 : 7_000_000;
+/**
+ * Older iPads (iOS before 16.4, which also need the older PDF engine) have
+ * little memory and a low canvas limit: past it, new pages simply stay blank.
+ */
+export const LOW_MEMORY = IS_IOS && !supportsModernEngine();
+const MAX_PIXELS = LOW_MEMORY ? 2_600_000 : IS_IOS ? 4_500_000 : 7_000_000;
 /** Budget for the sharp re-render of an on-screen page while zoomed in. */
-export const ZOOM_PIXELS = IS_IOS ? 9_000_000 : 16_000_000;
+export const ZOOM_PIXELS = LOW_MEMORY ? 4_000_000 : IS_IOS ? 9_000_000 : 16_000_000;
+
+export class CanvasMemoryError extends Error {
+  constructor() {
+    super('Out of canvas memory');
+    this.name = 'CanvasMemoryError';
+  }
+}
+
+/**
+ * Did drawing into this canvas work? Past its canvas-memory limit iOS keeps
+ * handing out canvases but silently drops everything drawn into them. Pages
+ * are opaque, so a transparent corner means nothing was stored.
+ */
+export function canvasOk(c) {
+  try {
+    const ctx = c.width && c.getContext('2d');
+    return !!ctx && ctx.getImageData(0, 0, 1, 1).data[3] !== 0;
+  } catch (e) {
+    return false;
+  }
+}
 
 /** Free a canvas's pixel memory right away (iOS doesn't do it promptly on its own). */
 export function releaseCanvas(c) {
@@ -55,9 +81,20 @@ export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels
   const canvas = document.createElement('canvas');
   canvas.width = Math.floor(viewport.width);
   canvas.height = Math.floor(viewport.height);
-  const task = page.render({ canvasContext: canvas.getContext('2d', { alpha: false }), viewport, background: '#fff' });
-  await task.promise;
-  if (tone !== 'original') await applyTone(canvas, page, viewport, tone);
+  const ctx = canvas.getContext('2d', { alpha: false });
+  // iOS hands out no drawing context once its canvas memory is used up.
+  if (!ctx) {
+    releaseCanvas(canvas);
+    throw new CanvasMemoryError();
+  }
+  try {
+    await page.render({ canvasContext: ctx, viewport, background: '#fff' }).promise;
+    if (tone !== 'original') await applyTone(canvas, page, viewport, tone);
+    if (!canvasOk(canvas)) throw new CanvasMemoryError();
+  } catch (e) {
+    releaseCanvas(canvas);
+    throw e;
+  }
   return canvas;
 }
 
@@ -119,8 +156,12 @@ export async function importFile(file, existingIds = new Set()) {
     if (!title || /\.(docx?|indd|pdf)$|^untitled/i.test(title)) title = cleanName(file.name);
     const first = await doc.getPage(1);
     const vp = first.getViewport({ scale: 1 });
-    const cover = await renderPageCanvas(first, 420, { maxDpr: 1 });
-    const coverBlob = await toBlob(cover, 'image/jpeg', 0.85);
+    let coverBlob = null;
+    try {
+      const cover = await renderPageCanvas(first, 420, { maxDpr: 1 });
+      coverBlob = await toBlob(cover, 'image/jpeg', 0.85);
+      releaseCanvas(cover);
+    } catch (e) {} // no memory for it right now: the book still imports
     const book = {
       id,
       title,

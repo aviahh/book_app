@@ -5,7 +5,7 @@
 // Portrait ("single"): pages stacked in a vertical strip and scrolled.
 // Both can be pinch-zoomed and panned.
 import { getBook, getBookFile, updateBook } from '../db.js';
-import { openPdf, buildTextLayer, renderPageCanvas, releaseCanvas, ZOOM_PIXELS } from '../pdf.js';
+import { openPdf, buildTextLayer, renderPageCanvas, releaseCanvas, canvasOk, ZOOM_PIXELS } from '../pdf.js';
 import { getSettings, onSettingsChange } from '../settings.js';
 import { icons } from '../icons.js';
 import { Speech, translate, pronounce, guessLang, isRtl } from '../google.js';
@@ -462,6 +462,14 @@ class Reader {
           c.height = tmp.height;
           c.getContext('2d').drawImage(tmp, 0, 0);
           c.dataset.zoom = want;
+          if (!canvasOk(c)) {
+            // Not enough memory for the sharp version: keep the normal one.
+            delete c.dataset.zoom;
+            releaseCanvas(tmp);
+            this.cache.relieve();
+            await this.cache.paint(n, c, 0).catch(() => {});
+            continue;
+          }
         }
         releaseCanvas(tmp);
       } catch {}
@@ -665,21 +673,27 @@ class Reader {
     });
     const pages = [...under.flatMap((u) => [...u.querySelectorAll('.page')]), front, back].filter(Boolean);
     Promise.race([Promise.all(pages.map((p) => p.painted)), new Promise((r) => setTimeout(r, 300))]).then(() => this.#drop(old));
-    this.turn = { flip, dir, from, target };
+    this.turn = { flip, dir, from, target, pages: [front, back].filter(Boolean) };
     return this.turn;
   }
 
   async #endTurn(turn, commit) {
     if (commit) this.spread = turn.target;
     await this.#renderSpread(this.spread, { replace: [...this.bookEl.children] });
-    turn.flip.destroy();
+    this.#disposeTurn(turn);
     if (this.turn === turn) this.turn = null;
     this.busy = false;
   }
 
+  /** Remove a turn's leaf and free its page images (iOS keeps them otherwise). */
+  #disposeTurn(turn) {
+    turn.flip.destroy();
+    this.#drop([...turn.pages, turn.flip.leaf, turn.flip.cast, turn.flip.root].filter(Boolean));
+  }
+
   #cancelTurn() {
     if (this.turn) {
-      this.turn.flip.destroy();
+      this.#disposeTurn(this.turn);
       this.turn = null;
     }
     this.busy = false;
@@ -1403,6 +1417,7 @@ class Reader {
     this.thumbs.destroy();
     for (const fn of this.cleanups) fn();
     this.#drop([this.el]);
+    this.cache.destroy();
     document.documentElement.classList.remove('reading');
     this.doc.destroy();
   }

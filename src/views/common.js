@@ -43,6 +43,22 @@ export function toast(view, msg, ms = 2600) {
 export function coverUrls() {
   const urls = new Map();
   return {
+    /**
+     * Copy the covers into memory first. Older iOS often refuses to show an
+     * image straight from a blob stored in IndexedDB ("WebKitBlobResource
+     * error"), even though reading the same blob's bytes works.
+     */
+    load(books) {
+      return Promise.all(
+        books.map(async (b) => {
+          if (!b.cover || urls.has(b.id)) return;
+          try {
+            const bytes = await b.cover.arrayBuffer();
+            urls.set(b.id, URL.createObjectURL(new Blob([bytes], { type: b.cover.type || 'image/jpeg' })));
+          } catch (e) {}
+        }),
+      );
+    },
     get(book) {
       if (!book.cover) return '';
       if (!urls.has(book.id)) urls.set(book.id, URL.createObjectURL(book.cover));

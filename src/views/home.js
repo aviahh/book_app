@@ -11,6 +11,7 @@ export async function mountHome(view, _params, nav) {
 
   async function render() {
     const books = await listBooks();
+    await covers.load(books);
     const opened = books.filter((b) => b.lastOpenedAt).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
     const current = opened.find((b) => !b.finished) || opened[0];
     const recent = opened.filter((b) => b !== current).slice(0, 8);

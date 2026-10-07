@@ -260,3 +260,23 @@ svg {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Icon buttons are centred with grid, which Safari before 14 ignores on
+   <button> elements (the icon sat at the left). Buttons centre their content
+   vertically anyway; this centres it horizontally too, grid or not. */
+.icon-btn,
+.tb,
+.edge-arrow,
+.ts-nav,
+.pop-copy {
+  text-align: center;
+}
+.icon-btn > svg,
+.tb > svg,
+.edge-arrow > svg,
+.ts-nav > svg,
+.pop-copy > svg {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
