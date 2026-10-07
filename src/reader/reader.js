@@ -31,7 +31,12 @@ const TURNERS = { curl: Flipper, fold: FoldFlipper, bend: BendFlipper };
 
 const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
 
+// Opened from the home-screen icon, the app already runs full screen. Asking
+// for full screen again would only make Chrome show its "swipe to exit" notice.
+const appIsFullscreen = () => matchMedia('(display-mode: fullscreen)').matches;
+
 function enterFullscreen() {
+  if (appIsFullscreen()) return;
   const d = document.documentElement;
   const req = d.requestFullscreen || d.webkitRequestFullscreen;
   if (fsElement() || !req) return;
@@ -465,7 +470,16 @@ class Reader {
 
     if (this.busy || target === this.spread) return;
     const from = this.spread;
-    const style = animate ? this.settings.pageTurn : 'none';
+    let style = animate ? this.settings.pageTurn : 'none';
+    // Zoomed in (landscape): by default switch instantly and stay zoomed;
+    // optionally zoom out first and then turn; or turn while zoomed.
+    const zoomed = this.camera.zoomed;
+    if (zoomed && this.settings.zoomTurn === 'stay') style = 'none';
+    if (zoomed && this.settings.zoomTurn === 'zoomOut') {
+      this.busy = true;
+      await this.camera.animateTo(1, 0, 0, 300);
+      this.busy = false;
+    }
     this.cache.demoteAll();
     if (TURNERS[style]) {
       const turn = this.#beginTurn(target > from ? 1 : -1, target);
@@ -477,7 +491,7 @@ class Reader {
       this.spread = target;
       await this.#renderSpread(target, { replace: [...this.bookEl.children] });
     }
-    // Zoomed in? Start the new spread from its top-left corner.
+    // Still zoomed in? Start the new spread from its top-left corner.
     if (this.camera.zoomed) {
       const box = this.camera.box;
       this.camera.set(this.camera.s, -box.x * this.camera.s, -box.y * this.camera.s);
@@ -537,6 +551,21 @@ class Reader {
     const bp = dir > 0 ? next.left : next.right;
     const front = fp ? this.#pageEl(fp, { text: false }) : null;
     const back = bp ? this.#pageEl(bp, { text: false }) : null;
+    // The turning sheet carries its half of the fold shading: it fades as the
+    // page lifts off and returns as the other side lands, matching the
+    // resting spreads before and after the turn.
+    const spineFrom = !!(cur.left && cur.right);
+    const spineTo = !!(next.left && next.right);
+    if (front) front.dataset.spine = dir > 0 ? 'left' : 'right';
+    if (back) back.dataset.spine = dir > 0 ? 'right' : 'left';
+    const style = this.settings.pageTurn;
+    const clamp01 = (v) => Math.max(0, Math.min(1, v));
+    const shadeSpine = (t) => {
+      const f = style === 'fold' ? 1 : clamp01(1 - 2 * t);
+      const b = style === 'fold' ? t * t : clamp01(2 * t - 1);
+      front?.style.setProperty('--spine-o', (spineFrom ? f : 0).toFixed(3));
+      back?.style.setProperty('--spine-o', (spineTo ? b : 0).toFixed(3));
+    };
     // Lay the turning set over the resting spread; drop the old one once painted.
     const old = [...book.children];
     book.append(...under);
@@ -551,7 +580,12 @@ class Reader {
       ph: this.ph,
       front,
       back,
-      onProgress: (t) => this.#setOffset(offFrom + (offTo - offFrom) * t),
+      spineFrom,
+      spineTo,
+      onProgress: (t) => {
+        this.#setOffset(offFrom + (offTo - offFrom) * t);
+        shadeSpine(t);
+      },
     });
     const pages = [...under.flatMap((u) => [...u.querySelectorAll('.page')]), front, back].filter(Boolean);
     Promise.race([Promise.all(pages.map((p) => p.painted)), new Promise((r) => setTimeout(r, 300))]).then(() => {
@@ -616,7 +650,7 @@ class Reader {
     const btn = this.el.querySelector('[data-act="fullscreen"]');
     const on = !!fsElement();
     const supported = !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
-    btn.hidden = !supported;
+    btn.hidden = !supported || appIsFullscreen();
     btn.innerHTML = on ? icons.shrink : icons.expand;
     btn.setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
     btn.classList.toggle('on', on);

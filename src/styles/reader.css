@@ -127,31 +127,55 @@
   background: #1d1b18;
 }
 
-/* The fold between two facing pages (see reference "Gradient") */
+/* The fold between two facing pages (see reference "Gradient").
+   Each page also carries its own half of this shading while it is being
+   turned (.page[data-spine]), so the fold never pops in after a turn. */
+.reader {
+  --spine-k: 1;
+}
+.reader[data-tone='night'] {
+  --spine-k: 2.4;
+}
 .spine {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(var(--pw) * 0.88);
-  width: calc(var(--pw) * 0.24);
+  left: calc(var(--pw) * 0.8);
+  width: calc(var(--pw) * 0.4);
   pointer-events: none;
   z-index: 2;
   background: linear-gradient(
     90deg,
     rgba(0, 0, 0, 0) 0%,
-    rgba(0, 0, 0, 0.025) 22%,
-    rgba(0, 0, 0, 0.07) 38%,
-    rgba(0, 0, 0, 0.16) 46%,
-    rgba(0, 0, 0, 0.3) 49.6%,
-    rgba(0, 0, 0, 0.22) 50.4%,
-    rgba(0, 0, 0, 0.08) 53%,
-    rgba(255, 255, 255, 0.14) 56%,
-    rgba(0, 0, 0, 0.03) 66%,
+    rgba(0, 0, 0, calc(0.01 * var(--spine-k))) 12.5%,
+    rgba(0, 0, 0, calc(0.03 * var(--spine-k))) 25%,
+    rgba(0, 0, 0, calc(0.075 * var(--spine-k))) 37.5%,
+    rgba(0, 0, 0, calc(0.14 * var(--spine-k))) 46%,
+    rgba(0, 0, 0, calc(0.2 * var(--spine-k))) 50%,
+    rgba(0, 0, 0, calc(0.14 * var(--spine-k))) 54%,
+    rgba(0, 0, 0, calc(0.075 * var(--spine-k))) 62.5%,
+    rgba(0, 0, 0, calc(0.03 * var(--spine-k))) 75%,
+    rgba(0, 0, 0, calc(0.01 * var(--spine-k))) 87.5%,
     rgba(0, 0, 0, 0) 100%
   );
 }
-.reader[data-tone='night'] .spine {
-  background: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.18) 42%, rgba(0, 0, 0, 0.55) 50%, rgba(0, 0, 0, 0.18) 58%, transparent 100%);
+.page[data-spine]::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 20%;
+  pointer-events: none;
+  z-index: 2;
+  opacity: var(--spine-o, 0);
+}
+.page[data-spine='left']::after {
+  left: 0;
+  background: linear-gradient(90deg, rgba(0, 0, 0, calc(0.2 * var(--spine-k))) 0%, rgba(0, 0, 0, calc(0.14 * var(--spine-k))) 8%, rgba(0, 0, 0, calc(0.075 * var(--spine-k))) 25%, rgba(0, 0, 0, calc(0.03 * var(--spine-k))) 50%, rgba(0, 0, 0, calc(0.01 * var(--spine-k))) 75%, rgba(0, 0, 0, 0) 100%);
+}
+.page[data-spine='right']::after {
+  right: 0;
+  background: linear-gradient(270deg, rgba(0, 0, 0, calc(0.2 * var(--spine-k))) 0%, rgba(0, 0, 0, calc(0.14 * var(--spine-k))) 8%, rgba(0, 0, 0, calc(0.075 * var(--spine-k))) 25%, rgba(0, 0, 0, calc(0.03 * var(--spine-k))) 50%, rgba(0, 0, 0, calc(0.01 * var(--spine-k))) 75%, rgba(0, 0, 0, 0) 100%);
 }
 
 /* ---------- page-turn leaf ---------- */

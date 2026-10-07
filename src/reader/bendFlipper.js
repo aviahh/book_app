@@ -7,6 +7,18 @@
 // Same interface as Flipper: set(t), progressFromX(), animateTo(), destroy(), t.
 
 const N = 24; // strips
+
+// Fold shading profile (same as .spine in reader.css): alpha by distance from
+// the spine, as a fraction of the page width.
+const SPINE = [[0, 0.2], [0.016, 0.14], [0.05, 0.075], [0.1, 0.03], [0.15, 0.01], [0.2, 0]];
+function spineAlpha(d) {
+  for (let i = 1; i < SPINE.length; i++) {
+    const [x1, y1] = SPINE[i];
+    const [x0, y0] = SPINE[i - 1];
+    if (d <= x1) return y0 + ((y1 - y0) * (d - x0)) / (x1 - x0);
+  }
+  return 0;
+}
 const BEND = 115; // max total bend across the sheet, degrees
 
 const ease = {
@@ -15,8 +27,9 @@ const ease = {
 };
 
 export class BendFlipper {
-  constructor({ book, dir, pw, ph, front, back, onProgress }) {
-    Object.assign(this, { book, dir, pw, ph, onProgress });
+  constructor({ book, dir, pw, ph, front, back, onProgress, spineFrom = false, spineTo = false }) {
+    Object.assign(this, { book, dir, pw, ph, onProgress, spineFrom, spineTo });
+    this.spineK = parseFloat(getComputedStyle(book).getPropertyValue('--spine-k')) || 1;
     this.t = 0;
     this.tilt = 0;
     const w = pw / N;
@@ -87,6 +100,7 @@ export class BendFlipper {
 
   /** Pose for progress t∈[0,1]. */
   set(t, tilt = this.tilt) {
+    const { pw } = this;
     this.t = t = Math.min(1, Math.max(0, t));
     this.tilt = tilt;
     const sign = this.dir > 0 ? -1 : 1;
@@ -110,8 +124,16 @@ export class BendFlipper {
       const back = (x) => Math.max(0, Math.min(0.75, (1 + x) * 0.7));
       // Gradient across each strip so the shading is smooth, not banded.
       const dirGrad = this.dir > 0 ? 'to right' : 'to left';
-      s.fs.style.background = `linear-gradient(${dirGrad}, rgba(0,0,0,${front(c).toFixed(3)}), rgba(0,0,0,${front(nextC).toFixed(3)}))`;
-      s.bs.style.background = `linear-gradient(${dirGrad === 'to right' ? 'to left' : 'to right'}, rgba(0,0,0,${back(c).toFixed(3)}), rgba(0,0,0,${back(nextC).toFixed(3)}))`;
+      // Fold shading near the spine: fades from the front as it lifts, grows on the back as it lands.
+      const fo = this.spineFrom ? Math.max(0, Math.min(1, 1 - 2 * t)) : 0;
+      const bo = this.spineTo ? Math.max(0, Math.min(1, 2 * t - 1)) : 0;
+      const d0 = i * this.w;
+      const d1 = d0 + this.w;
+      const sf = (o) => (o ? `linear-gradient(${dirGrad}, rgba(0,0,0,${(spineAlpha(d0 / pw) * o * this.spineK).toFixed(3)}), rgba(0,0,0,${(spineAlpha(d1 / pw) * o * this.spineK).toFixed(3)})), ` : '');
+      const backDir = dirGrad === 'to right' ? 'to left' : 'to right';
+      const sb = (o) => (o ? `linear-gradient(${backDir}, rgba(0,0,0,${(spineAlpha(d0 / pw) * o * this.spineK).toFixed(3)}), rgba(0,0,0,${(spineAlpha(d1 / pw) * o * this.spineK).toFixed(3)})), ` : '');
+      s.fs.style.background = `${sf(fo)}linear-gradient(${dirGrad}, rgba(0,0,0,${front(c).toFixed(3)}), rgba(0,0,0,${front(nextC).toFixed(3)}))`;
+      s.bs.style.background = `${sb(bo)}linear-gradient(${backDir}, rgba(0,0,0,${back(c).toFixed(3)}), rgba(0,0,0,${back(nextC).toFixed(3)}))`;
     }
     this.cast.style.opacity = (lift * 0.7).toFixed(3);
     this.cast.style.setProperty('--reach', `${(1 - t) * 100}%`);

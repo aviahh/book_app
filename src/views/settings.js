@@ -39,6 +39,7 @@ export async function mountSettings(view, _p, nav) {
       <div class="set-group">
         ${row('Turn with a single tap on hidden arrows', 'When off, the first tap reveals the side arrows and a second tap turns the page.', toggle('singleTapArrows'))}
         ${row('Pages per double-arrow jump', 'How far the « and » buttons move.', stepper('jumpPages', 2, 50))}
+        ${row('Turning pages while zoomed in', 'Landscape only. “Stay zoomed” jumps straight to the top of the next pages without leaving the zoom.', select('zoomTurn', [['stay', 'Stay zoomed, jump to top'], ['zoomOut', 'Zoom out, then turn'], ['animate', 'Turn while zoomed']]))}
         ${row('Page-turn effect', 'Used in landscape (two pages). In portrait, pages scroll.', select('pageTurn', [['bend', 'Soft page'], ['fold', 'Paper corner'], ['curl', 'Classic 3D'], ['slide', 'Slide'], ['none', 'None']]))}
       </div>
 

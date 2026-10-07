@@ -11,6 +11,7 @@ export const DEFAULTS = {
   autoHideSeconds: 3.5,
   pageTurn: 'fold', // landscape only: 'fold' | 'bend' | 'curl' | 'slide' | 'none'
   fullscreen: true, // enter full screen when a book opens
+  zoomTurn: 'stay', // landscape, zoomed in: 'stay' (instant, keep zoom) | 'zoomOut' (zoom out, then turn) | 'animate'
   pageTone: 'original', // 'original' | 'warm' | 'night'
   backdrop: 'night', // 'night' | 'walnut' | 'linen'
   theme: 'auto', // 'auto' (follow the device) | 'light' | 'dark'
