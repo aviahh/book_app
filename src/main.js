@@ -14,6 +14,7 @@ import { mountReader } from './reader/reader.js';
 import { requestPersistence } from './db.js';
 import { getSettings, onSettingsChange } from './settings.js';
 import { initRouter, nav, currentRoute } from './router.js';
+import './joke.js'; // one-off "rate the app" joke; delete this line and src/joke.js to remove
 
 function applyTheme({ theme }) {
   const root = document.documentElement;
