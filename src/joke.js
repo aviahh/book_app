@@ -1,32 +1,16 @@
-// A one-off joke: a fake "rate the app" bubble that appears a few seconds
-// after the app opens. Shown until it is answered or closed, then never again
-// on that device. Everything (markup, styles, behaviour) lives in this file;
-// to remove it, delete this file and its import line in main.js.
-
-const SEEN_KEY = 'folio.joke.rate.v1';
-
-function seen() {
-  try {
-    return localStorage.getItem(SEEN_KEY) === '1';
-  } catch (e) {
-    return false;
-  }
-}
-
-function markSeen() {
-  try {
-    localStorage.setItem(SEEN_KEY, '1');
-  } catch (e) {}
-}
+// A one-off joke: a fake "rate the app" bubble in the middle of the screen,
+// 2.5 s after every launch of the app. Everything (markup, styles,
+// behaviour) lives in this file; to remove it, delete this file and its
+// import line in main.js. It stores nothing.
 
 const CSS = `
 .joke-rate {
   position: fixed;
   left: 50%;
-  bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  top: 50%;
   z-index: 9999;
   width: min(360px, calc(100% - 32px));
-  transform: translate(-50%, 20px);
+  transform: translate(-50%, -50%) scale(0.9);
   opacity: 0;
   padding: 22px 22px 18px;
   border-radius: 20px;
@@ -39,7 +23,7 @@ const CSS = `
   transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1.2), opacity 0.3s ease;
 }
 .joke-rate.in {
-  transform: translate(-50%, 0);
+  transform: translate(-50%, -50%) scale(1);
   opacity: 1;
 }
 .joke-rate p {
@@ -137,7 +121,6 @@ function show() {
   requestAnimationFrame(() => requestAnimationFrame(() => box.classList.add('in')));
 
   const close = () => {
-    markSeen();
     box.classList.remove('in');
     setTimeout(() => {
       box.remove();
@@ -166,4 +149,4 @@ function show() {
   }
 }
 
-if (!seen()) setTimeout(show, 2500);
+setTimeout(show, 2500);
