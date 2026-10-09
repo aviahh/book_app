@@ -30,9 +30,12 @@ const LONG_PRESS_MS = 450; // press and hold a word: translate it
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
 const STRIP_GAP = 14;
-// One page when zoomed in (landscape): zoom out this far below "the whole
-// page fits" before returning to the spread, and how long the move takes.
-const FOCUS_EXIT = 0.88;
+// One page when zoomed in (landscape): zooming out stops where the page is
+// as wide as the screen; past that it resists (FOCUS_GIVE: how much of the
+// pinch gets through), and letting go below FOCUS_EXIT of that width returns
+// to the spread. FOCUS_MS: how long the move takes.
+const FOCUS_EXIT = 0.9;
+const FOCUS_GIVE = 0.55;
 const FOCUS_MS = 300;
 const STRIP_PAD = 18;
 // Animated page-turn styles (landscape) → their engines.
@@ -1482,7 +1485,12 @@ class Reader {
   #pinchMove() {
     const [a, b] = [...this.pointers.values()];
     const { d0, s0, c } = this.pinch;
-    const s = Math.max(this.focus ? this.#focusFitScale() * 0.7 : 0.8, Math.min(MAX_ZOOM * 1.15, (s0 * Math.hypot(a.x - b.x, a.y - b.y)) / d0));
+    let s = Math.min(MAX_ZOOM * 1.15, (s0 * Math.hypot(a.x - b.x, a.y - b.y)) / d0);
+    if (this.focus) {
+      // Below "page as wide as the screen" the zoom resists.
+      const floor = this.#focusFloor();
+      if (s < floor) s = Math.max(floor * 0.7, floor - (floor - s) * FOCUS_GIVE);
+    } else s = Math.max(0.8, s);
     const mid = (this.pinch.mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
     this.camera.set(s, mid.x - c.x * s, mid.y - c.y * s);
   }
@@ -1502,11 +1510,11 @@ class Reader {
    */
   #zoomSettled(mid) {
     const cam = this.camera;
-    if (!this.busy && this.focus && cam.s < this.#focusFitScale() * FOCUS_EXIT) return this.#leaveFocus();
+    if (!this.busy && this.focus && cam.s < this.#focusFloor() * FOCUS_EXIT) return this.#leaveFocus();
     if (!this.busy && !this.focus && this.mode === 'double' && this.settings.focusZoom !== false && cam.s >= this.#focusEnterScale()) {
       return this.#enterFocus(mid);
     }
-    const s = Math.max(this.focus ? this.#focusFitScale() : 1, Math.min(MAX_ZOOM, cam.s));
+    const s = Math.max(this.focus ? this.#focusFloor() : 1, Math.min(MAX_ZOOM, cam.s));
     if (s !== cam.s) {
       const c = cam.toContent(mid.x, mid.y);
       cam.animateTo(s, mid.x - c.x * s, mid.y - c.y * s, 220);
@@ -1521,9 +1529,9 @@ class Reader {
     return Math.max(1.3, Math.min(MAX_ZOOM * 0.95, single / this.pw));
   }
 
-  /** Zoom of the one-page view at which the whole page fits on screen. */
-  #focusFitScale() {
-    return Math.min(1, (this.H - 16) / this.ph);
+  /** Zoom of the one-page view below which it resists, and then returns to the spread: the page exactly as wide as the screen. */
+  #focusFloor() {
+    return 1;
   }
 
   /** A page element lifted out of the layout, kept on screen at `r` while the layout changes beneath it. */
@@ -1657,7 +1665,7 @@ class Reader {
     const p = this.#local(e);
     if (e.ctrlKey) {
       cam.stop();
-      const floor = this.focus ? this.#focusFitScale() * 0.8 : 1;
+      const floor = this.focus ? this.#focusFloor() * 0.8 : 1;
       cam.zoomAround(p.x, p.y, Math.max(floor, Math.min(MAX_ZOOM, cam.s * Math.exp(-e.deltaY * 0.01))));
       // Like letting go of a pinch, once the wheel rests.
       clearTimeout(this.wheelZoomTimer);
