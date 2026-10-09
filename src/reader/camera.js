@@ -31,7 +31,13 @@ export class Camera {
     this.box = box;
   }
 
-  clamp(s, tx, ty) {
+  /**
+   * Keep the box on screen. While `free` is set (a layout change is being
+   * animated, and the picture must not jump) nothing is limited, unless
+   * `force` asks for the limited position anyway.
+   */
+  clamp(s, tx, ty, force = false) {
+    if (this.free && !force) return { s, tx, ty };
     const b = this.box;
     const fit = (lo, size, view, t) => {
       const scaled = size * s;

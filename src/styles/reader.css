@@ -46,6 +46,18 @@
   position: absolute;
   top: 0;
 }
+/* A page lifted out of the layout while it switches between spread and single page */
+.focus-ghost {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  background: #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.18), 0 18px 40px -10px rgba(0, 0, 0, 0.55);
+  transition: opacity 0.3s ease;
+}
+.reader[data-tone='night'] .focus-ghost {
+  background: #1d1b18;
+}
 .slot.strip-page {
   left: 0;
   background: #fff;

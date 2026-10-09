@@ -25,6 +25,10 @@ const DOUBLE_TAP_MS = 340;
 const MOVE_SLOP = 10;
 const MAX_ZOOM = 4;
 const STRIP_GAP = 14;
+// One page when zoomed in (landscape): zoom out this far below "the whole
+// page fits" before returning to the spread, and how long the move takes.
+const FOCUS_EXIT = 0.88;
+const FOCUS_MS = 300;
 const STRIP_PAD = 18;
 // Animated page-turn styles (landscape) → their engines.
 const TURNERS = { curl: Flipper, fold: FoldFlipper, bend: BendFlipper };
@@ -80,6 +84,7 @@ class Reader {
     this.cache.setTone(getSettings().pageTone);
     this.settings = getSettings();
     this.mode = null;
+    this.focus = false; // landscape, zoomed into one page
     this.spread = 0; // spread index (double) or page index (single)
     this.busy = false; // a page turn is animating
     this.renderZoom = 1;
@@ -180,6 +185,7 @@ class Reader {
     this.el.dataset.tone = s.pageTone;
     if (toneChanged) this.#retone();
     this.el.classList.toggle('toolbar-top', s.toolbarPosition === 'top');
+    if (this.focus && s.focusZoom === false) this.#layout();
   }
 
   // ------------------------------------------------------------------ layout
@@ -246,21 +252,19 @@ class Reader {
     const W = this.el.clientWidth;
     const H = this.el.clientHeight;
     if (!W || !H) return;
-    const mode = this.lock.locked ? this.lock.lockedMode : W > H ? 'double' : 'single';
-    const aspect = this.book.pageAspect || this.book.aspect || 0.7;
-    let pw;
-    if (mode === 'double') {
-      const vpad = Math.max(18, H * 0.035);
-      const hpad = Math.max(56, W * 0.05);
-      pw = Math.floor(Math.min((W - 2 * hpad) / 2, (H - 2 * vpad) * aspect));
-    } else {
-      // Portrait reads as a scroll of full-width pages.
-      pw = Math.floor(Math.min(W - 2 * Math.max(10, W * 0.025), 1200));
-    }
+    // The layout the screen calls for; zoomed into one page in landscape
+    // ("focus"), the one-page scroll is used instead of the spread.
+    const natural = this.lock.locked ? this.lock.lockedMode : W > H ? 'double' : 'single';
+    if (natural !== 'double' || this.settings.focusZoom === false) this.focus = false;
+    this.natural = natural;
+    const mode = natural === 'double' && this.focus ? 'single' : natural;
+    const aspect = this.#aspect();
+    const pw = this.#pageWidth(mode, W, H);
     const ph = Math.floor(pw / aspect);
     const changed = mode !== this.mode || pw !== this.pw || ph !== this.ph || W !== this.W || H !== this.H;
     if (!changed) return;
-    const page = this.#currentPage();
+    const page = this.forcePage || this.#currentPage();
+    this.forcePage = null;
     const modeChanged = mode !== this.mode;
     Object.assign(this, { W, H, pw, ph, mode });
     this.el.style.setProperty('--pw', `${pw}px`);
@@ -300,6 +304,21 @@ class Reader {
     this.#updateZoomChip();
     this.#updateIndicator();
     if (modeChanged) this.thumbs.rebuild();
+  }
+
+  #aspect() {
+    return this.book.pageAspect || this.book.aspect || 0.7;
+  }
+
+  /** Page width (CSS px) for a layout on a W×H screen. */
+  #pageWidth(mode, W, H) {
+    if (mode === 'double') {
+      const vpad = Math.max(18, H * 0.035);
+      const hpad = Math.max(56, W * 0.05);
+      return Math.floor(Math.min((W - 2 * hpad) / 2, (H - 2 * vpad) * this.#aspect()));
+    }
+    // Portrait (and focus) reads as a scroll of full-width pages.
+    return Math.floor(Math.min(W - 2 * Math.max(10, W * 0.025), 1200));
   }
 
   #offsetFor(index) {
@@ -1153,11 +1172,12 @@ class Reader {
   }
 
   async #toggleLock(btn) {
-    const locked = await this.lock.toggle(this.mode);
+    const mode = this.natural || this.mode; // landscape stays landscape while zoomed into one page
+    const locked = await this.lock.toggle(mode);
     btn.innerHTML = locked ? icons.locked : icons.lock;
     btn.classList.toggle('on', locked);
     btn.setAttribute('aria-pressed', String(locked));
-    this.#toast(locked ? `Locked to ${this.mode === 'double' ? 'landscape' : 'portrait'}` : 'Orientation unlocked');
+    this.#toast(locked ? `Locked to ${mode === 'double' ? 'landscape' : 'portrait'}` : 'Orientation unlocked');
   }
 
   // Pointer state machine ----------------------------------------------------
@@ -1338,7 +1358,7 @@ class Reader {
   #pinchMove() {
     const [a, b] = [...this.pointers.values()];
     const { d0, s0, c } = this.pinch;
-    const s = Math.max(0.8, Math.min(MAX_ZOOM * 1.15, (s0 * Math.hypot(a.x - b.x, a.y - b.y)) / d0));
+    const s = Math.max(this.focus ? this.#focusFitScale() * 0.7 : 0.8, Math.min(MAX_ZOOM * 1.15, (s0 * Math.hypot(a.x - b.x, a.y - b.y)) / d0));
     const mid = (this.pinch.mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
     this.camera.set(s, mid.x - c.x * s, mid.y - c.y * s);
   }
@@ -1347,12 +1367,164 @@ class Reader {
     const { mid } = this.pinch;
     this.pinch = null;
     this.ptr = null; // the finger left on screen starts nothing new
+    this.#zoomSettled(mid);
+  }
+
+  /**
+   * A zoom gesture ended. In landscape, zooming in until one page is as wide
+   * as the screen switches to the one-page view ("focus"); zooming out past
+   * the whole page, with some margin to spare, goes back to the spread.
+   * Otherwise the zoom springs back within its limits.
+   */
+  #zoomSettled(mid) {
     const cam = this.camera;
-    const s = Math.max(1, Math.min(MAX_ZOOM, cam.s));
+    if (!this.busy && this.focus && cam.s < this.#focusFitScale() * FOCUS_EXIT) return this.#leaveFocus();
+    if (!this.busy && !this.focus && this.mode === 'double' && this.settings.focusZoom !== false && cam.s >= this.#focusEnterScale()) {
+      return this.#enterFocus(mid);
+    }
+    const s = Math.max(this.focus ? this.#focusFitScale() : 1, Math.min(MAX_ZOOM, cam.s));
     if (s !== cam.s) {
       const c = cam.toContent(mid.x, mid.y);
       cam.animateTo(s, mid.x - c.x * s, mid.y - c.y * s, 220);
     }
+  }
+
+  // ------------------------------------------------------------------ one page when zoomed in (landscape)
+
+  /** Zoom of the spread at which one page is exactly as wide as in the one-page view. */
+  #focusEnterScale() {
+    const single = this.#pageWidth('single', this.W, this.H);
+    return Math.max(1.3, Math.min(MAX_ZOOM * 0.95, single / this.pw));
+  }
+
+  /** Zoom of the one-page view at which the whole page fits on screen. */
+  #focusFitScale() {
+    return Math.min(1, (this.H - 16) / this.ph);
+  }
+
+  /** A page element lifted out of the layout, kept on screen at `r` while the layout changes beneath it. */
+  #ghost(pageEl, r) {
+    const g = document.createElement('div');
+    g.className = 'focus-ghost';
+    Object.assign(g.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+    for (const x of pageEl.querySelectorAll('.textLayer, .linkLayer')) x.remove();
+    g.append(pageEl);
+    this.stage.append(g);
+    return g;
+  }
+
+  /** Show `old`'s picture in the (not yet painted) canvas of page n, so it never appears blank. */
+  #adopt(n, old) {
+    if (!old || !old.width) return;
+    const root = this.mode === 'single' ? this.stripEl : this.bookEl;
+    const c = root.querySelector(`.slot .page[data-page="${n}"] canvas`);
+    if (!c || c.classList.contains('ready')) return;
+    c.width = old.width;
+    c.height = old.height;
+    const ctx = c.getContext('2d');
+    if (ctx) ctx.drawImage(old, 0, 0);
+  }
+
+  /**
+   * Spread → one page. The page under the fingers stays exactly where it is
+   * on screen while the layout is swapped beneath it (same size, same place),
+   * then glides to the middle as its partner page fades away.
+   */
+  async #enterFocus(mid) {
+    const pages = [...this.bookEl.querySelectorAll(':scope > .slot > .page')];
+    if (!pages.length) return;
+    const rects = pages.map((p) => this.lock.rectToLocal(p.getBoundingClientRect()));
+    let k = rects.findIndex((r) => mid.x >= r.left && mid.x <= r.left + r.width);
+    if (k < 0) {
+      const shown = (r) => Math.max(0, Math.min(this.W, r.left + r.width) - Math.max(0, r.left));
+      k = shown(rects[0]) >= shown(rects[rects.length - 1]) ? 0 : rects.length - 1;
+    }
+    const keep = pages[k];
+    const R = rects[k];
+    const n = +keep.dataset.page;
+    const old = keep.querySelector('canvas');
+    this.busy = true;
+    this.#closePopup();
+    this.#clearHighlights();
+    const ghosts = pages.filter((p) => p !== keep).map((p) => this.#ghost(p, rects[pages.indexOf(p)]));
+    keep.remove(); // keep its picture: the layout change frees what's left in the book
+    this.focus = true;
+    this.forcePage = n;
+    this.#layout();
+    const cam = this.camera;
+    const stripLeft = (this.W - this.pw) / 2;
+    const s = R.width / this.pw;
+    cam.free = true;
+    cam.set(s, R.left - stripLeft * s, R.top - this.#pageTop(n) * s);
+    cam.flush();
+    this.#syncStrip();
+    this.#adopt(n, old);
+    releaseCanvas(old);
+    // Then settle: centred if the page is narrower than the screen.
+    const fs = Math.min(MAX_ZOOM, s);
+    const to = cam.clamp(fs, fs * this.pw <= this.W ? (this.W - this.pw * fs) / 2 - stripLeft * fs : cam.tx, cam.ty, true);
+    requestAnimationFrame(() => ghosts.forEach((g) => (g.style.opacity = '0')));
+    await cam.animateTo(to.s, to.tx, to.ty, FOCUS_MS);
+    cam.free = false;
+    setTimeout(() => this.#drop(ghosts), 120);
+    this.busy = false;
+    this.spread = this.#stripCurrent() - 1;
+    this.#afterMove();
+  }
+
+  /**
+   * One page → spread. The page shrinks and slides into its place in the
+   * spread while its partner fades in beside it; then the spread takes over
+   * underneath an identical picture.
+   */
+  async #leaveFocus() {
+    const cam = this.camera;
+    const { W, H } = this;
+    const n = this.#pageAtY((H / 2 - cam.ty) / cam.s);
+    const pwD = this.#pageWidth('double', W, H);
+    const phD = Math.floor(pwD / this.#aspect());
+    const sp = spreadPages('double', spreadOf('double', n), this.total);
+    const off = !sp.left && sp.right ? -pwD / 2 : sp.left && !sp.right ? pwD / 2 : 0;
+    const bookLeft = (W - 2 * pwD) / 2 + off;
+    const top = (H - phD) / 2;
+    const isRight = sp.right === n;
+    const partner = isRight ? sp.left : sp.right;
+    this.busy = true;
+    this.#closePopup();
+    this.#clearHighlights();
+    let ghost = null;
+    if (partner) {
+      ghost = this.#ghost(this.#pageEl(partner, { text: false }), { left: bookLeft + (isRight ? 0 : pwD), top, width: pwD, height: phD });
+      ghost.style.opacity = '0';
+      requestAnimationFrame(() => requestAnimationFrame(() => ghost && (ghost.style.opacity = '1')));
+    }
+    // Pages above and below fade out of the way.
+    for (const [m, slot] of this.stripPages) {
+      if (m === n) continue;
+      slot.style.transition = `opacity ${FOCUS_MS}ms ease`;
+      slot.style.opacity = '0';
+    }
+    const stripLeft = (W - this.pw) / 2;
+    const s = pwD / this.pw;
+    cam.free = true;
+    await cam.animateTo(s, bookLeft + (isRight ? pwD : 0) - stripLeft * s, top - this.#pageTop(n) * s, FOCUS_MS + 40);
+    // Swap the layout beneath an identical picture.
+    const keepSlot = this.stripPages.get(n);
+    const old = keepSlot && keepSlot.querySelector('.page canvas');
+    if (keepSlot) {
+      keepSlot.remove();
+      this.stripPages.delete(n);
+    }
+    cam.free = false;
+    this.focus = false;
+    this.forcePage = n;
+    this.#layout();
+    this.#adopt(n, old);
+    if (ghost) this.#adopt(partner, ghost.querySelector('canvas'));
+    if (keepSlot) this.#drop([keepSlot]);
+    if (ghost) this.#drop([ghost]);
+    this.busy = false;
+    this.#afterMove();
   }
 
   #wheel(e) {
@@ -1361,7 +1533,12 @@ class Reader {
     const p = this.#local(e);
     if (e.ctrlKey) {
       cam.stop();
-      return cam.zoomAround(p.x, p.y, Math.max(1, Math.min(MAX_ZOOM, cam.s * Math.exp(-e.deltaY * 0.01))));
+      const floor = this.focus ? this.#focusFitScale() * 0.8 : 1;
+      cam.zoomAround(p.x, p.y, Math.max(floor, Math.min(MAX_ZOOM, cam.s * Math.exp(-e.deltaY * 0.01))));
+      // Like letting go of a pinch, once the wheel rests.
+      clearTimeout(this.wheelZoomTimer);
+      this.wheelZoomTimer = setTimeout(() => this.#zoomSettled(p), 260);
+      return;
     }
     if (this.mode === 'single' || cam.zoomed) {
       cam.stop();
