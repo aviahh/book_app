@@ -267,6 +267,7 @@ class Reader {
     if (!changed) return;
     const page = this.forcePage || this.#currentPage();
     this.forcePage = null;
+    if (W !== this.W || H !== this.H) this.#resetPointers(); // rotated or resized: fingers start afresh
     const modeChanged = mode !== this.mode;
     Object.assign(this, { W, H, pw, ph, mode });
     this.el.style.setProperty('--pw', `${pw}px`);
@@ -1069,6 +1070,11 @@ class Reader {
       else if (k === 'Escape') this.#closePopup();
     });
 
+    const lostFingers = () => this.#resetPointers();
+    on(window, 'blur', lostFingers);
+    on(window, 'orientationchange', lostFingers);
+    on(document, 'visibilitychange', () => document.hidden && lostFingers());
+
     const ro = new ResizeObserver(() => this.#layout());
     ro.observe(el);
     this.cleanups.push(() => ro.disconnect());
@@ -1211,6 +1217,16 @@ class Reader {
       this.#clearHighlights();
       return;
     }
+    // A first finger means no other finger is on the screen. If we still
+    // think one is, its lift was never reported (iOS can drop it during a
+    // rotation or when the page under it is swapped): forget it, or every
+    // one-finger move would be taken for a pinch with that "ghost" finger.
+    if (e.isPrimary && this.pointers.size) this.#resetPointers();
+    // Keep receiving this finger's moves and lift even if the element it
+    // started on is removed meanwhile (page turns, layout changes).
+    try {
+      if (e.pointerType === 'touch' && this.stage.setPointerCapture) this.stage.setPointerCapture(e.pointerId);
+    } catch (err) {}
     const p = this.#local(e);
     this.pointers.set(e.pointerId, p);
 
@@ -1241,6 +1257,14 @@ class Reader {
     const ptr = this.ptr;
     clearTimeout(this.pressTimer);
     this.pressTimer = setTimeout(() => this.#longPress(ptr), LONG_PRESS_MS);
+  }
+
+  /** Forget every finger on the screen (and any gesture in progress). */
+  #resetPointers() {
+    this.pointers.clear();
+    this.pinch = null;
+    this.ptr = null;
+    clearTimeout(this.pressTimer);
   }
 
   /** Press and hold (without moving): translate the word under the finger. */
@@ -1686,11 +1710,24 @@ class Reader {
   }
 
   /** Translate the current word selection (one word, or several after dragging the handles). */
+  /** Punctuation directly after the selection's end (a full stop, comma, closing quote…). */
+  #trailingPunctuation(spans, a, b) {
+    const end = a.index > b.index || (a.index === b.index && a.offset > b.offset) ? a : b;
+    let rest = spans[end.index].textContent.slice(end.offset);
+    if (!rest && spans[end.index + 1]) rest = spans[end.index + 1].textContent;
+    const m = /^[.,!?;:…"”’'»)\]]+/.exec(rest);
+    return m ? m[0] : '';
+  }
+
   async #translateSelection() {
     const { spans, a, b } = this.wordSel;
     const rects = rangeRects(spans, a, b);
     if (!rects.length) return;
     const text = rangeText(spans, a, b);
+    // A phrase translates better with the punctuation that ends it ("Lilia."
+    // reads as a whole sentence); the highlight stays on the words.
+    const tail = /\s/.test(text) ? this.#trailingPunctuation(spans, a, b) : '';
+    const query = text + tail;
     this.#drawHighlights(rects, 'word');
     this.#placeHandles(rects);
     const anchor = this.lock.rectToLocal(rects[0]);
@@ -1700,10 +1737,10 @@ class Reader {
     clearTimeout(this.popCloseTimer);
     this.#renderPopup(anchor, { word: text, loading: true });
     try {
-      let res = await translate(text, target);
+      let res = await translate(query, target);
       // Already in the target language → show English instead.
       if (res.source && res.source.split('-')[0] === target.split('-')[0] && target !== 'en') {
-        res = await translate(text, 'en');
+        res = await translate(query, 'en');
       }
       if (req !== this.popReq || this.pop.hidden) return;
       if (res.source) this.popWord.lang = res.source === 'he' ? 'iw' : res.source;

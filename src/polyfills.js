@@ -113,6 +113,15 @@ export function installPointerShim(force = false) {
     'touchstart',
     (e) => {
       lastTouch = Date.now();
+      // A touch whose end was never reported (rotation, system gesture) is
+      // not in e.touches any more: end it now, or it would linger as a
+      // phantom finger.
+      const live = new Set([...e.touches].map(touchId));
+      for (const [id, target] of [...targets]) {
+        if (live.has(id)) continue;
+        targets.delete(id);
+        fire('pointercancel', target, { clientX: 0, clientY: 0, pageX: 0, pageY: 0 }, id, 'touch');
+      }
       const el = e.target;
       if (!el.__pointerShim) {
         el.__pointerShim = true;
