@@ -1329,7 +1329,7 @@ class Reader {
     const cam = this.camera;
     cam.stop();
     this.#closePopup();
-    if (this.focus) return this.#leaveFocus();
+    if (this.focus) return this.#leaveFocus({ reset: true });
     if (cam.zoomed) {
       const c = cam.toContent(x, y);
       return cam.animateTo(1, x - c.x, y - c.y, 300);
@@ -1605,56 +1605,57 @@ class Reader {
   }
 
   /**
-   * One page → spread. The page shrinks and slides into its place in the
-   * spread while its partner fades in beside it; then the spread takes over
-   * underneath an identical picture.
+   * One page → spread, keeping the zoom: the spread takes over beneath the
+   * page at exactly its current size and place, its partner fades in beside
+   * it, and the view only eases as far as needed to keep the book on screen.
+   * Zooming out further from there is an ordinary spread zoom.
+   * With `reset` (double tap) it then eases all the way out to the spread.
    */
-  async #leaveFocus() {
+  async #leaveFocus({ reset = false } = {}) {
     const cam = this.camera;
     const { W, H } = this;
     const n = this.#pageAtY((H / 2 - cam.ty) / cam.s);
-    const pwD = this.#pageWidth('double', W, H);
-    const phD = Math.floor(pwD / this.#aspect());
-    const sp = spreadPages('double', spreadOf('double', n), this.total);
-    const off = !sp.left && sp.right ? -pwD / 2 : sp.left && !sp.right ? pwD / 2 : 0;
-    const bookLeft = (W - 2 * pwD) / 2 + off;
-    const top = (H - phD) / 2;
-    const isRight = sp.right === n;
-    const partner = isRight ? sp.left : sp.right;
+    const keepSlot = this.stripPages.get(n);
+    const keepPage = keepSlot && keepSlot.querySelector('.page');
+    if (!keepPage) return;
+    const R = this.lock.rectToLocal(keepPage.getBoundingClientRect());
+    const old = keepPage.querySelector('canvas');
     this.busy = true;
     this.#closePopup();
     this.#clearHighlights();
-    let ghost = null;
-    if (partner) {
-      ghost = this.#ghost(this.#pageEl(partner, { text: false }), { left: bookLeft + (isRight ? 0 : pwD), top, width: pwD, height: phD });
-      ghost.style.opacity = '0';
-      requestAnimationFrame(() => requestAnimationFrame(() => ghost && (ghost.style.opacity = '1')));
-    }
-    // Pages above and below fade out of the way.
-    for (const [m, slot] of this.stripPages) {
-      if (m === n) continue;
-      slot.style.transition = `opacity ${FOCUS_MS}ms ease`;
-      slot.style.opacity = '0';
-    }
-    const stripLeft = (W - this.pw) / 2;
-    const s = pwD / this.pw;
-    cam.free = true;
-    await cam.animateTo(s, bookLeft + (isRight ? pwD : 0) - stripLeft * s, top - this.#pageTop(n) * s, FOCUS_MS + 40);
-    // Swap the layout beneath an identical picture.
-    const keepSlot = this.stripPages.get(n);
-    const old = keepSlot && keepSlot.querySelector('.page canvas');
-    if (keepSlot) {
-      keepSlot.remove();
-      this.stripPages.delete(n);
-    }
-    cam.free = false;
+    keepSlot.remove(); // keep its picture: the layout change frees what's left in the strip
+    this.stripPages.delete(n);
     this.focus = false;
     this.forcePage = n;
     this.#layout();
+    // The page's place in the spread, at zoom 1 (content coordinates).
+    const sp = spreadPages('double', this.spread, this.total);
+    const isRight = sp.right === n;
+    const book = this.#bookRect();
+    const x0 = book.left + (isRight ? this.pw : 0);
+    const y0 = book.top;
     this.#adopt(n, old);
-    if (ghost) this.#adopt(partner, ghost.querySelector('canvas'));
-    if (keepSlot) this.#drop([keepSlot]);
-    if (ghost) this.#drop([ghost]);
+    this.#drop([keepSlot]);
+    // The partner page (and the spine shading) fade in beside it.
+    const partnerSide = isRight ? 'left' : 'right';
+    const fading = [...this.bookEl.querySelectorAll(`:scope > .slot.${partnerSide}, :scope > .spine`)];
+    for (const f of fading) f.style.opacity = '0';
+    const partnerPage = this.bookEl.querySelector(`:scope > .slot.${partnerSide} .page`);
+    Promise.race([partnerPage ? partnerPage.painted : null, new Promise((r) => setTimeout(r, 250))]).then(() => {
+      for (const f of fading) {
+        f.style.transition = `opacity ${FOCUS_MS}ms ease`;
+        f.style.opacity = '1';
+      }
+      setTimeout(() => fading.forEach((f) => (f.style.transition = f.style.opacity = '')), FOCUS_MS + 50);
+    });
+    // Same size, same place as a moment ago.
+    const s = R.width / this.pw;
+    cam.free = true;
+    cam.set(s, R.left - x0 * s, R.top - y0 * s);
+    cam.flush();
+    const to = reset ? cam.clamp(1, 0, 0, true) : cam.clamp(s, cam.tx, cam.ty, true);
+    await cam.animateTo(to.s, to.tx, to.ty, reset ? FOCUS_MS + 60 : FOCUS_MS);
+    cam.free = false;
     this.busy = false;
     this.#afterMove();
   }
