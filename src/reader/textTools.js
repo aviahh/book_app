@@ -81,6 +81,19 @@ export function wordAt(spans, pos) {
   return { a: { index: pos.index, offset: s }, b: { index: pos.index, offset: e }, text: text.slice(s, e) };
 }
 
+/**
+ * What a selection can grow to at `pos`: the whole word there, or a single
+ * punctuation mark (so a full stop or a quote can be included on its own,
+ * without also taking the next word). Spaces give nothing.
+ */
+export function selectableAt(spans, pos) {
+  const word = wordAt(spans, pos);
+  if (word) return word;
+  const ch = spans[pos.index].textContent[pos.offset] || '';
+  if (!ch || /\s/.test(ch)) return null;
+  return { a: { index: pos.index, offset: pos.offset }, b: { index: pos.index, offset: pos.offset + 1 }, text: ch };
+}
+
 export const ordered = (a, b) =>
   a.index < b.index || (a.index === b.index && a.offset <= b.offset) ? [a, b] : [b, a];
 

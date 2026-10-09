@@ -16,13 +16,16 @@ import { FoldFlipper } from './foldFlipper.js';
 import { BendFlipper } from './bendFlipper.js';
 import { Camera } from './camera.js';
 import { spreadCount, spreadOf, spreadPages, visiblePages, spreadLabel } from './spreads.js';
-import { collectSpans, hitTest, wordAt, rangeRects, rangeText } from './textTools.js';
+import { collectSpans, hitTest, wordAt, selectableAt, rangeRects, rangeText } from './textTools.js';
 import { OrientationLock } from './orientation.js';
 import { ThumbStrip } from './thumbs.js';
 
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 340;
 const MOVE_SLOP = 10;
+// Text positions { index, offset } (span, character): order and equality.
+const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
+const same = (p, q) => p.index === q.index && p.offset === q.offset;
 const LONG_PRESS_MS = 450; // press and hold a word: translate it
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
@@ -1279,9 +1282,38 @@ class Reader {
     this.wordSel = null;
     this.#lookupWord(ptr.cx0, ptr.cy0);
     if (this.wordSel) {
-      ptr.pressed = true; // lifting the finger then does nothing more
+      ptr.pressed = true; // lifting the finger then does nothing more…
+      ptr.anchor = { a: this.wordSel.a, b: this.wordSel.b }; // …unless it drags on to select more
       if (navigator.vibrate) navigator.vibrate(8);
     }
+  }
+
+  /**
+   * After a press and hold has picked a word, dragging on without lifting the
+   * finger grows the selection, like dragging a handle: from the pressed word
+   * to wherever the finger is, forwards or backwards, word by word (or a
+   * single punctuation mark).
+   */
+  #extendFromPress(e, ptr, p) {
+    const sel = this.wordSel;
+    if (!sel || !ptr.anchor) return;
+    if (!ptr.extended && Math.hypot(p.x - ptr.x0, p.y - ptr.y0) < MOVE_SLOP) return;
+    const pos = hitTest(sel.spans, e.clientX, e.clientY, { mode: 'char', maxDist: 40 });
+    const u = pos && selectableAt(sel.spans, pos);
+    if (!u) return;
+    const a = before(u.a, ptr.anchor.a) ? u.a : ptr.anchor.a;
+    const b = before(ptr.anchor.b, u.b) ? u.b : ptr.anchor.b;
+    if (!ptr.extended) {
+      ptr.extended = true;
+      clearTimeout(this.popCloseTimer); // no closing while the selection is being adjusted
+      this.pop.classList.add('adjusting');
+    }
+    if (same(a, sel.a) && same(b, sel.b)) return;
+    sel.a = a;
+    sel.b = b;
+    const rects = rangeRects(sel.spans, a, b);
+    this.#drawHighlights(rects, 'word');
+    this.#placeHandles(rects);
   }
 
   /**
@@ -1325,6 +1357,7 @@ class Reader {
     if (this.pinch) return this.#pinchMove();
     const ptr = this.ptr;
     if (!ptr || e.pointerId !== ptr.id) return;
+    if (ptr.pressed) return this.#extendFromPress(e, ptr, p);
     if (ptr.selecting) {
       if (Math.hypot(p.x - ptr.x0, p.y - ptr.y0) > MOVE_SLOP) ptr.moved = true;
       return ptr.moved && this.#selectMove(e);
@@ -1389,7 +1422,14 @@ class Reader {
     if (!ptr || e.pointerId !== ptr.id) return;
     this.ptr = null;
     clearTimeout(this.pressTimer);
-    if (ptr.pressed) return; // the hold already translated
+    if (ptr.pressed) {
+      // The hold already translated; if the finger then dragged, translate the grown selection.
+      if (ptr.extended && !cancelled) {
+        this.pop.classList.remove('adjusting');
+        this.#translateSelection();
+      } else if (ptr.extended) this.pop.classList.remove('adjusting');
+      return;
+    }
     if (ptr.selecting) {
       // A plain tap on text is still a tap (toolbar / double-tap zoom).
       if (!ptr.moved) {
@@ -1796,13 +1836,12 @@ class Reader {
     if (!d || e.pointerId !== d.id) return;
     const sel = this.wordSel;
     const pos = hitTest(sel.spans, e.clientX, e.clientY + d.dy, { mode: 'char', maxDist: 40 });
-    const w = pos && wordAt(sel.spans, pos);
+    const w = pos && selectableAt(sel.spans, pos);
     if (!w) return;
-    const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
     let { a, b } = sel;
     if (d.which === 'start') a = before(w.a, b) ? w.a : a;
     else b = before(a, w.b) ? w.b : b;
-    if (a === sel.a && b === sel.b) return;
+    if (same(a, sel.a) && same(b, sel.b)) return;
     sel.a = a;
     sel.b = b;
     d.changed = true;
