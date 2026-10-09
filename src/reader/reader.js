@@ -23,6 +23,8 @@ import { ThumbStrip } from './thumbs.js';
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 340;
 const MOVE_SLOP = 10;
+// The book open when the app last went to the background (see main.js).
+export const READING_KEY = 'folio.reading.v1';
 // Text positions { index, offset } (span, character): order and equality.
 const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
 const same = (p, q) => p.index === q.index && p.offset === q.offset;
@@ -1080,6 +1082,7 @@ class Reader {
     on(window, 'blur', lostFingers);
     on(window, 'orientationchange', lostFingers);
     on(document, 'visibilitychange', () => document.hidden && lostFingers());
+    on(document, 'visibilitychange', () => this.#onVisibility());
 
     const ro = new ResizeObserver(() => this.#layout());
     ro.observe(el);
@@ -1415,6 +1418,10 @@ class Reader {
   }
 
   async #up(e, cancelled = false) {
+    if (this.refullscreen) {
+      this.refullscreen = false;
+      enterFullscreen();
+    }
     if (!this.pointers.has(e.pointerId)) return;
     this.pointers.delete(e.pointerId);
     if (this.pinch) {
@@ -1782,7 +1789,7 @@ class Reader {
     const anchor = this.lock.rectToLocal(rects[0]);
     const target = this.settings.translateTo;
     const req = (this.popReq = (this.popReq || 0) + 1);
-    this.popWord = { text, lang: guessLang(text) };
+    this.popWord = { text, query, lang: guessLang(text) };
     clearTimeout(this.popCloseTimer);
     this.#renderPopup(anchor, { word: text, loading: true });
     try {
@@ -1893,10 +1900,12 @@ class Reader {
       ${alts}
       <div class="pop-foot">
         <button class="pop-copy" data-act="popCopy" aria-label="Copy word">${icons.copy}</button>
-        <span class="pop-credit">translated by <b>Google</b></span>
+        <a class="pop-credit" data-google href="${esc(this.#googleUrl())}" target="_blank" rel="noopener">Open in <b>Google Translate</b> <span aria-hidden="true">↗</span></a>
       </div>`;
     pop.hidden = false;
     this.#paintSound();
+    const g = pop.querySelector('[data-google]');
+    if (g) g.addEventListener('click', (e) => this.#openGoogle(e));
     // Position above the word, or below if there is no room.
     const pw = pop.offsetWidth;
     const ph = pop.offsetHeight;
@@ -1925,6 +1934,59 @@ class Reader {
     // The ring closes and fades once loading ends.
     btn.classList.toggle('loaded', state !== 'loading' && !!snd && snd.was === 'loading');
     btn.setAttribute('aria-label', state === 'playing' ? 'Stop' : `Pronounce ${btn.textContent.trim()}`);
+  }
+
+  /** Google Translate (website) with the selected text filled in. */
+  #googleUrl() {
+    const w = this.popWord;
+    if (!w) return 'https://translate.google.com/';
+    const tl = this.settings.translateTo || 'iw';
+    return `https://translate.google.com/?sl=auto&tl=${encodeURIComponent(tl)}&text=${encodeURIComponent(w.query || w.text)}&op=translate`;
+  }
+
+  /**
+   * Hand the selection over to Google Translate. Android: straight into the
+   * Translate app with the text (its website if the app isn't installed);
+   * coming back is the Back gesture. Elsewhere the link opens Google
+   * Translate (iOS passes it to the app when installed). The text is also
+   * put on the clipboard, just in case. The bubble waits; see #onVisibility.
+   */
+  #openGoogle(e) {
+    const w = this.popWord;
+    if (!w) return;
+    const text = w.query || w.text;
+    clearTimeout(this.popCloseTimer);
+    try {
+      if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+    } catch (err) {}
+    if (/Android/i.test(navigator.userAgent)) {
+      e.preventDefault();
+      location.href =
+        'intent:#Intent;action=android.intent.action.SEND;type=text/plain;' +
+        `S.android.intent.extra.TEXT=${encodeURIComponent(text)};` +
+        'package=com.google.android.apps.translate;' +
+        `S.browser_fallback_url=${encodeURIComponent(this.#googleUrl())};end`;
+    }
+    // Otherwise the link itself opens Google Translate in a new view.
+  }
+
+  /**
+   * Leaving the app (e.g. for Google Translate) and coming back: save the
+   * place and remember that this book is open (if the system closes the app
+   * meanwhile, it reopens straight into the book); on return the bubble's
+   * countdown starts again and full screen comes back with the next tap.
+   */
+  #onVisibility() {
+    if (document.hidden) {
+      clearTimeout(this.popCloseTimer);
+      if (this.mode) updateBook(this.book.id, { lastPage: this.#currentPage(), lastOpenedAt: Date.now() });
+      try {
+        localStorage.setItem(READING_KEY, JSON.stringify({ id: this.book.id, at: Date.now() }));
+      } catch (err) {}
+      return;
+    }
+    if (!this.pop.hidden) this.#armPopupClose();
+    if (this.settings.fullscreen && !fsElement()) this.refullscreen = true;
   }
 
   /** Close the bubble by itself after the chosen delay (Settings; 0 = never). */
@@ -2034,6 +2096,9 @@ class Reader {
     clearTimeout(this.hiResTimer);
     this.camera.stop();
     if (this.mode) updateBook(this.book.id, { lastPage: this.#currentPage(), lastOpenedAt: Date.now() });
+    try {
+      localStorage.removeItem(READING_KEY);
+    } catch (err) {}
     // Leaving for Settings keeps full screen; leaving the book ends it.
     if (!location.hash.startsWith('#/settings')) exitFullscreen();
     this.speech.stop(true);

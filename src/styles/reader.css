@@ -901,7 +901,13 @@
 }
 .pop-credit {
   font-size: 0.78rem;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.5);
+  text-decoration: none;
+  padding: 8px 0 8px 10px; /* a comfortable target for a finger */
+  -webkit-tap-highlight-color: transparent;
+}
+.pop-credit:active {
+  color: rgba(255, 255, 255, 0.8);
 }
 .pop-credit b {
   font-weight: 600;

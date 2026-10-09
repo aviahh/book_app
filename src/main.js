@@ -68,4 +68,14 @@ async function render() {
   }
 }
 
+// The app went to the background with a book open (e.g. to look something up
+// in Google Translate) and the system closed it meanwhile: open that book
+// again rather than the Reading Room. (The reader forgets it once the book
+// is closed normally.)
+try {
+  const open = JSON.parse(localStorage.getItem('folio.reading.v1') || 'null');
+  const home = !location.hash || location.hash === '#/' || location.hash === '#';
+  if (open && home && Date.now() - open.at < 12 * 3600 * 1000) history.replaceState(null, '', `#/read/${open.id}`);
+} catch (e) {}
+
 initRouter(render);
