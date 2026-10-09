@@ -23,8 +23,7 @@ import { ThumbStrip } from './thumbs.js';
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 340;
 const MOVE_SLOP = 10;
-/** Highest zoom allowed (Settings: 400%, 600% or 800%). */
-const maxZoom = () => Number(getSettings().maxZoom) || 4;
+const MAX_ZOOM = 4;
 const STRIP_GAP = 14;
 const STRIP_PAD = 18;
 // Animated page-turn styles (landscape) → their engines.
@@ -581,7 +580,7 @@ class Reader {
    */
   async #hiRes() {
     if (this.pinch || this.busy) return (this.hiResTimer = setTimeout(() => this.#hiRes(), 260));
-    const want = Math.min(maxZoom(), Math.max(1, Math.round(this.camera.s * 2) / 2));
+    const want = Math.min(MAX_ZOOM, Math.max(1, Math.round(this.camera.s * 2) / 2));
     this.renderZoom = want;
     const token = ++this.hiResToken;
     for (const c of this.#visibleCanvases()) {
@@ -1339,7 +1338,7 @@ class Reader {
   #pinchMove() {
     const [a, b] = [...this.pointers.values()];
     const { d0, s0, c } = this.pinch;
-    const s = Math.max(0.8, Math.min(maxZoom() * 1.15, (s0 * Math.hypot(a.x - b.x, a.y - b.y)) / d0));
+    const s = Math.max(0.8, Math.min(MAX_ZOOM * 1.15, (s0 * Math.hypot(a.x - b.x, a.y - b.y)) / d0));
     const mid = (this.pinch.mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
     this.camera.set(s, mid.x - c.x * s, mid.y - c.y * s);
   }
@@ -1349,7 +1348,7 @@ class Reader {
     this.pinch = null;
     this.ptr = null; // the finger left on screen starts nothing new
     const cam = this.camera;
-    const s = Math.max(1, Math.min(maxZoom(), cam.s));
+    const s = Math.max(1, Math.min(MAX_ZOOM, cam.s));
     if (s !== cam.s) {
       const c = cam.toContent(mid.x, mid.y);
       cam.animateTo(s, mid.x - c.x * s, mid.y - c.y * s, 220);
@@ -1362,7 +1361,7 @@ class Reader {
     const p = this.#local(e);
     if (e.ctrlKey) {
       cam.stop();
-      return cam.zoomAround(p.x, p.y, Math.max(1, Math.min(maxZoom(), cam.s * Math.exp(-e.deltaY * 0.01))));
+      return cam.zoomAround(p.x, p.y, Math.max(1, Math.min(MAX_ZOOM, cam.s * Math.exp(-e.deltaY * 0.01))));
     }
     if (this.mode === 'single' || cam.zoomed) {
       cam.stop();
