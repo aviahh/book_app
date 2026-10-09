@@ -23,6 +23,8 @@ import { ThumbStrip } from './thumbs.js';
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 340;
 const MOVE_SLOP = 10;
+const LONG_PRESS_MS = 450; // press and hold a word: translate it
+const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
 const STRIP_GAP = 14;
 // One page when zoomed in (landscape): zoom out this far below "the whole
@@ -1035,6 +1037,7 @@ class Reader {
     });
 
     on(this.stage, 'pointerdown', (e) => this.#down(e));
+    on(this.stage, 'contextmenu', (e) => e.preventDefault()); // press and hold is ours (translation)
     on(window, 'pointermove', (e) => this.#move(e));
     on(window, 'pointerup', (e) => this.#up(e));
     on(window, 'pointercancel', (e) => this.#up(e, true));
@@ -1182,8 +1185,9 @@ class Reader {
 
   // Pointer state machine ----------------------------------------------------
   //
-  // One finger: tap / double-tap, page-turn drag (landscape, not zoomed),
-  // pan (portrait, or zoomed), or text selection (read-aloud mode).
+  // One finger: tap / double-tap (zoom in and back), press and hold (translate
+  // the word), page-turn drag (landscape, not zoomed), pan (portrait, or
+  // zoomed), or text selection (read-aloud mode).
   // Two fingers: pinch-zoom.
 
   #local(e) {
@@ -1234,6 +1238,60 @@ class Reader {
       this.ptr.selecting = true;
       e.preventDefault();
     }
+    const ptr = this.ptr;
+    clearTimeout(this.pressTimer);
+    this.pressTimer = setTimeout(() => this.#longPress(ptr), LONG_PRESS_MS);
+  }
+
+  /** Press and hold (without moving): translate the word under the finger. */
+  #longPress(ptr) {
+    if (this.ptr !== ptr || ptr.moved || this.pinch || this.pointers.size !== 1 || ptr.zone.indexOf('arrow') === 0) return;
+    if (ptr.selecting) {
+      ptr.selecting = false; // a hold on text in read-aloud mode translates instead of selecting
+      this.sel = null;
+    }
+    clearTimeout(this.tapTimer);
+    this.lastTap = null;
+    this.wordSel = null;
+    this.#lookupWord(ptr.cx0, ptr.cy0);
+    if (this.wordSel) {
+      ptr.pressed = true; // lifting the finger then does nothing more
+      if (navigator.vibrate) navigator.vibrate(8);
+    }
+  }
+
+  /**
+   * Double tap: zoom in where tapped; double tap again: back to the normal
+   * view. In landscape (with "One page when zoomed in") it zooms straight
+   * into the tapped page as a single page, and back out to the spread.
+   */
+  async #doubleTapZoom(x, y) {
+    if (this.busy) return;
+    const cam = this.camera;
+    cam.stop();
+    this.#closePopup();
+    if (this.focus) return this.#leaveFocus();
+    if (cam.zoomed) {
+      const c = cam.toContent(x, y);
+      return cam.animateTo(1, x - c.x, y - c.y, 300);
+    }
+    if (this.mode === 'double' && this.settings.focusZoom !== false) {
+      // Zoom until the tapped page is as wide as it is on its own, then hand over to the one-page view.
+      const r = this.#bookRect();
+      const sp = spreadPages('double', this.spread, this.total);
+      let right = x >= r.left + this.pw;
+      if (right && !sp.right) right = false;
+      if (!right && !sp.left) right = true;
+      const pageLeft = r.left + (right ? this.pw : 0);
+      const S = this.#focusEnterScale();
+      this.busy = true;
+      await cam.animateTo(S, (this.W - this.pw * S) / 2 - pageLeft * S, y * (1 - S), 320);
+      this.busy = false;
+      return this.#enterFocus({ x: this.W / 2, y });
+    }
+    const S = Math.min(MAX_ZOOM, DOUBLE_TAP_ZOOM);
+    const c = cam.toContent(x, y);
+    return cam.animateTo(S, x - c.x * S, y - c.y * S, 300);
   }
 
   #move(e) {
@@ -1306,8 +1364,10 @@ class Reader {
     const ptr = this.ptr;
     if (!ptr || e.pointerId !== ptr.id) return;
     this.ptr = null;
+    clearTimeout(this.pressTimer);
+    if (ptr.pressed) return; // the hold already translated
     if (ptr.selecting) {
-      // A plain tap on text is still a tap (toolbar / double-tap translation).
+      // A plain tap on text is still a tap (toolbar / double-tap zoom).
       if (!ptr.moved) {
         this.sel = null;
         if (!cancelled && performance.now() - ptr.t0 < 600) this.#tap(ptr);
@@ -1567,14 +1627,14 @@ class Reader {
     if (last && now - last.t < DOUBLE_TAP_MS && Math.hypot(ptr.cx0 - last.x, ptr.cy0 - last.y) < 32) {
       clearTimeout(this.tapTimer);
       this.lastTap = null;
-      return this.#lookupWord(ptr.cx0, ptr.cy0);
+      return this.#doubleTapZoom(ptr.x0, ptr.y0);
     }
     this.lastTap = { t: now, x: ptr.cx0, y: ptr.cy0 };
     clearTimeout(this.tapTimer);
     const link = this.#linkAt(ptr.cx0, ptr.cy0);
     this.tapTimer = setTimeout(() => {
       this.lastTap = null;
-      // A single tap on a link follows it (a double tap still translates).
+      // A single tap on a link follows it (a double tap still zooms).
       if (link && link.isConnected) return this.#followLink(link);
       if (this.el.classList.contains('chrome-on')) this.#hideChrome();
       else this.#showChrome();

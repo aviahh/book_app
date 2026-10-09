@@ -105,7 +105,7 @@ export async function mountSettings(view, _p, nav) {
 
       <h2>Translation</h2>
       <div class="set-group">
-        ${row('Translate words into', 'Double-tap any word while reading; drag the handles to translate a phrase.', select('translateTo', LANGUAGES))}
+        ${row('Translate words into', 'Press and hold any word while reading; drag the handles to translate a phrase.', select('translateTo', LANGUAGES))}
         ${row('Close the bubble after', '', stepper('popupSeconds', 0, 15, 0.5), {
           sub: true,
           dyn: (s) => ({ desc: s.popupSeconds === 0 ? 'The bubble stays until you tap elsewhere.' : 'Touching the bubble restarts the countdown.' }),
