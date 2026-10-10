@@ -2022,6 +2022,7 @@ class Reader {
     if (!w) return;
     const text = w.query || w.text;
     clearTimeout(this.popCloseTimer);
+    this.leftForGoogle = true; // back from Google Translate: the bubble has done its job
     try {
       if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
     } catch (err) {}
@@ -2039,8 +2040,9 @@ class Reader {
   /**
    * Leaving the app (e.g. for Google Translate) and coming back: save the
    * place and remember that this book is open (if the system closes the app
-   * meanwhile, it reopens straight into the book); on return the bubble's
-   * countdown starts again and full screen comes back with the next tap.
+   * meanwhile, it reopens straight into the book); on return from Google
+   * Translate the bubble is closed (otherwise its countdown starts again),
+   * and full screen comes back with the next tap.
    */
   #onVisibility() {
     if (document.hidden) {
@@ -2051,7 +2053,11 @@ class Reader {
       } catch (err) {}
       return;
     }
-    if (!this.pop.hidden) this.#armPopupClose();
+    if (this.leftForGoogle) {
+      this.leftForGoogle = false;
+      this.#closePopup();
+      this.#clearHighlights(true);
+    } else if (!this.pop.hidden) this.#armPopupClose();
     if (this.settings.fullscreen && !fsElement()) this.refullscreen = true;
   }
 
