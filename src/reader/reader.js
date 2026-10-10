@@ -122,6 +122,13 @@ class Reader {
     this.cleanups.push(trackReading(() => !document.hidden));
     this.#applySettings(this.settings);
     this.startPage = Math.min(book.lastPage || 1, this.total);
+    try {
+      const open = JSON.parse(localStorage.getItem(READING_KEY) || 'null');
+      if (open && open.id === book.id && open.view && Date.now() - open.at < 12 * 3600 * 1000) {
+        this.pendingView = open.view;
+        this.startPage = Math.min(Math.max(1, open.view.n), this.total);
+      }
+    } catch (err) {}
     this.#layout();
     this.#showChrome();
     updateBook(book.id, { lastOpenedAt: Date.now() });
@@ -262,6 +269,10 @@ class Reader {
     const W = this.el.clientWidth;
     const H = this.el.clientHeight;
     if (!W || !H) return;
+    // The exact view to keep: the same screen with a new size (e.g. full
+    // screen ended while away in Google Translate), or reopening the app.
+    const keep = this.mode ? this.#viewAnchor() : this.pendingView || null;
+    if (!this.mode && this.pendingView) this.focus = !!this.pendingView.focus;
     // The layout the screen calls for; zoomed into one page in landscape
     // ("focus"), the one-page scroll is used instead of the spread.
     const natural = this.lock.locked ? this.lock.lockedMode : W > H ? 'double' : 'single';
@@ -315,6 +326,61 @@ class Reader {
     this.#updateZoomChip();
     this.#updateIndicator();
     if (modeChanged) this.thumbs.rebuild();
+    // Same layout as before (only the size changed): same zoom, same spot.
+    if (keep && keep.mode === mode) this.#restoreView(keep);
+    this.pendingView = null;
+  }
+
+  /**
+   * Where the reader is looking: the page at the middle of the screen, the
+   * spot of that page there (as fractions of its size), and the zoom.
+   */
+  #viewAnchor() {
+    const cam = this.camera;
+    const cx = (this.W / 2 - cam.tx) / cam.s;
+    const cy = (this.H / 2 - cam.ty) / cam.s;
+    let n;
+    let left;
+    let top;
+    if (this.mode === 'single') {
+      n = this.#pageAtY(cy);
+      left = (this.W - this.pw) / 2;
+      top = this.#pageTop(n);
+    } else {
+      const r = this.#bookRect();
+      const sp = spreadPages('double', this.spread, this.total);
+      const right = sp.right && (cx >= r.left + this.pw || !sp.left);
+      n = right ? sp.right : sp.left;
+      left = r.left + (right ? this.pw : 0);
+      top = r.top;
+    }
+    // w: the page's width on screen, so it keeps its size even if the layout's page size changes.
+    return { mode: this.mode, focus: this.focus, n, fx: (cx - left) / this.pw, fy: (cy - top) / this.ph, s: cam.s, w: cam.s * this.pw };
+  }
+
+  /** Put the view back on a spot saved by #viewAnchor (in the current layout). */
+  #restoreView(v) {
+    let left;
+    let top;
+    if (this.mode === 'single') {
+      left = (this.W - this.pw) / 2;
+      top = this.#pageTop(v.n);
+    } else {
+      if (Math.abs(v.s - 1) < 0.02) return; // the whole spread: already showing
+      const r = this.#bookRect();
+      const sp = spreadPages('double', this.spread, this.total);
+      if (v.n !== sp.left && v.n !== sp.right) return;
+      left = r.left + (v.n === sp.right ? this.pw : 0);
+      top = r.top;
+    }
+    const cam = this.camera;
+    const x = left + v.fx * this.pw;
+    const y = top + v.fy * this.ph;
+    const s = Math.max(1, Math.min(MAX_ZOOM, v.w ? v.w / this.pw : v.s));
+    cam.stop();
+    cam.set(s, this.W / 2 - x * s, this.H / 2 - y * s);
+    cam.flush();
+    if (this.mode === 'single') this.#syncStrip();
   }
 
   #aspect() {
@@ -1981,7 +2047,7 @@ class Reader {
       clearTimeout(this.popCloseTimer);
       if (this.mode) updateBook(this.book.id, { lastPage: this.#currentPage(), lastOpenedAt: Date.now() });
       try {
-        localStorage.setItem(READING_KEY, JSON.stringify({ id: this.book.id, at: Date.now() }));
+        localStorage.setItem(READING_KEY, JSON.stringify({ id: this.book.id, at: Date.now(), view: this.mode ? this.#viewAnchor() : null }));
       } catch (err) {}
       return;
     }
