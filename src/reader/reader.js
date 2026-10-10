@@ -1287,11 +1287,6 @@ class Reader {
   #down(e, forced) {
     if (e.button > 0) return;
     e.stopPropagation();
-    if (!this.pop.hidden && this.pointers.size === 0) {
-      this.#closePopup();
-      this.#clearHighlights();
-      return;
-    }
     // A first finger means no other finger is on the screen. If we still
     // think one is, its lift was never reported (iOS can drop it during a
     // rotation or when the page under it is swapped): forget it, or every
@@ -1323,6 +1318,14 @@ class Reader {
     if (this.pointers.size > 1) return;
 
     this.camera.stop();
+    if (!this.pop.hidden) {
+      // The translation bubble is open: a tap or a drag only closes it, but a
+      // press and hold on another word translates that one straight away.
+      const ptr = (this.ptr = { id: e.pointerId, x0: p.x, y0: p.y, lx: p.x, ly: p.y, cx0: e.clientX, cy0: e.clientY, t0: performance.now(), zone: 'center', dismiss: true });
+      clearTimeout(this.pressTimer);
+      this.pressTimer = setTimeout(() => this.#longPress(ptr), LONG_PRESS_MS);
+      return;
+    }
     this.ptr = { id: e.pointerId, x0: p.x, y0: p.y, lx: p.x, ly: p.y, cx0: e.clientX, cy0: e.clientY, t0: performance.now(), zone: forced || this.#zone(p) };
     // Read-aloud mode: a drag that starts on text selects it; anywhere else behaves as usual.
     if (this.readMode && this.#selectStart(e)) {
@@ -1332,6 +1335,14 @@ class Reader {
     const ptr = this.ptr;
     clearTimeout(this.pressTimer);
     this.pressTimer = setTimeout(() => this.#longPress(ptr), LONG_PRESS_MS);
+  }
+
+  /** A touch while the bubble was open turned out not to be a hold: close the bubble. */
+  #dismissPopup(ptr) {
+    if (this.ptr === ptr) this.ptr = null; // the rest of this touch does nothing
+    clearTimeout(this.pressTimer);
+    this.#closePopup();
+    this.#clearHighlights();
   }
 
   /** Forget every finger on the screen (and any gesture in progress). */
@@ -1430,6 +1441,10 @@ class Reader {
     const ptr = this.ptr;
     if (!ptr || e.pointerId !== ptr.id) return;
     if (ptr.pressed) return this.#extendFromPress(e, ptr, p);
+    if (ptr.dismiss) {
+      if (Math.hypot(p.x - ptr.x0, p.y - ptr.y0) > MOVE_SLOP) this.#dismissPopup(ptr);
+      return;
+    }
     if (ptr.selecting) {
       if (Math.hypot(p.x - ptr.x0, p.y - ptr.y0) > MOVE_SLOP) ptr.moved = true;
       return ptr.moved && this.#selectMove(e);
@@ -1506,6 +1521,7 @@ class Reader {
       } else if (ptr.extended) this.pop.classList.remove('adjusting');
       return;
     }
+    if (ptr.dismiss) return this.#dismissPopup(ptr);
     if (ptr.selecting) {
       // A plain tap on text is still a tap (toolbar / double-tap zoom).
       if (!ptr.moved) {
