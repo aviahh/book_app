@@ -2,7 +2,7 @@ import { listBooks, removeBook, updateBook } from '../db.js';
 import { icons } from '../icons.js';
 import { groupSeries, seriesOf, volumeLabel } from '../series.js';
 import { shell, esc, coverUrls, progressOf, addBooksFlow, enableDrop, toast } from './common.js';
-import { cloudLibrary, inDrive, cloudIcon, openCloudBook, cloudMenu, cloudMenuAction } from '../sync/library.js';
+import { cloudLibrary, inDrive, cloudIcon, openCloudBook, cloudMenu, cloudMenuAction, familyLibraries, familyShelves, mountFamilyPage } from '../sync/library.js';
 
 const latest = (b) => b.lastOpenedAt || b.addedAt || 0;
 
@@ -21,11 +21,15 @@ export async function mountLibrary(view, _params, nav) {
   const covers = coverUrls();
   // A series shelf opened on its own page: #/library?series=<key>
   const seriesKey = new URLSearchParams(location.hash.split('?')[1] || '').get('series');
+  // A family library (shared with this account): #/library?family=<owner>
+  const familyKey = new URLSearchParams(location.hash.split('?')[1] || '').get('family');
+  if (familyKey) return mountFamilyPage(content, familyKey, view, nav, toast);
   let sort = sessionStorage.getItem('folio.sort') || 'recent';
   let query = '';
   let books = [];
   let groups = [];
   let driveCopies = new Set(); // local books that also have a copy in Google Drive
+  let families = []; // family libraries shared with this account
 
   content.innerHTML = seriesKey
     ? `
@@ -68,6 +72,7 @@ export async function mountLibrary(view, _params, nav) {
     try {
       driveCopies = await inDrive(books);
       books = books.concat(await cloudLibrary());
+      if (!seriesKey) families = await familyLibraries();
     } catch (e) {}
     groups = groupSeries(books).groups;
     await covers.load(books);
@@ -130,7 +135,7 @@ export async function mountLibrary(view, _params, nav) {
     content.querySelector('.lib-count').textContent = books.length
       ? `${books.length} book${books.length === 1 ? '' : 's'}${groups.length ? ` · ${groups.length} series` : ''} · ${books.filter((b) => b.finished).length} finished`
       : '';
-    if (!books.length) {
+    if (!books.length && !families.length) {
       grid.innerHTML = `
         <div class="lib-empty">
           <div class="welcome-art" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -154,11 +159,11 @@ export async function mountLibrary(view, _params, nav) {
       items = [...groups.map(groupItem), ...singles.map(bookItem)];
     }
     items.sort(SORTS[sort]);
-    if (!items.length) {
+    if (!items.length && (q || !families.length)) {
       grid.innerHTML = `<p class="no-results">Nothing matches “${esc(query)}”.</p>`;
       return;
     }
-    grid.innerHTML = items.map((it) => (it.group ? seriesCard(it.group) : bookCard(it.book))).join('');
+    grid.innerHTML = items.map((it) => (it.group ? seriesCard(it.group) : bookCard(it.book))).join('') + (q ? '' : familyShelves(families));
   }
 
   function drawSeries() {

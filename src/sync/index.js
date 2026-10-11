@@ -9,6 +9,7 @@
 
 import { account, setAccount, forgetAccount, syncNow, watchLocal, deviceName, post, onRemoteBook } from './engine.js';
 import { keepBooksInDrive } from './drive.js';
+import { forgetFamily } from './family.js';
 
 const listeners = new Set();
 let state = { busy: false };
@@ -163,6 +164,7 @@ export async function signOut() {
     } catch (e) {}
   }
   await forgetAccount();
+  forgetFamily();
   emit();
 }
 

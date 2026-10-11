@@ -2,6 +2,7 @@
 import './sync.css';
 import { status, onSyncStatus, runSync, signInWithGoogle, linkWithCode, makeLinkCode, signOut, takeSigninError, takeDriveNote } from './index.js';
 import { connectDrive, disconnectDrive, driveSummary, onDriveProgress } from './drive.js';
+import { familyList, familyCached, shareCode, joinFamily, stopSharingWith, leaveFamily, ownerName } from './family.js';
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -82,6 +83,7 @@ export function mountSyncSettings(group) {
         live ? `<output class="sync-code" aria-label="Link code">${esc(shownCode.code.slice(0, 3))}<i></i>${esc(shownCode.code.slice(3))}</output>` : '<button class="btn subtle" data-sync="code">Show code</button>',
         ' sub',
       );
+      html += familyRows();
     }
     group.innerHTML = html;
     const input = group.querySelector('.sync-input');
@@ -99,10 +101,63 @@ export function mountSyncSettings(group) {
     }
   }
 
+  // ---- family libraries
+  let famCode = null; // { code, until }
+  let famEntering = false;
+  let famNote = '';
+
+  function familyRows() {
+    const fam = familyCached() || { libraries: [], members: [] };
+    const live = famCode && famCode.until > Date.now();
+    let html = row(
+      'Family library',
+      esc(
+        famNote ||
+          (live
+            ? 'Give this code to family. In Folio they choose Settings › Sync › Family library › Add, and type it. It works once, for a day.'
+            : 'Share the books in your Drive with family, or add a library someone shared with you. Everyone keeps their own progress.'),
+      ),
+      live
+        ? `<output class="sync-code" aria-label="Family code">${esc(famCode.code.slice(0, 4))}<i></i>${esc(famCode.code.slice(4))}</output>`
+        : famEntering
+          ? `<form class="sync-enter" data-sync-form="family"><input class="sync-input wide" name="code" maxlength="9" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD EFGH" aria-label="Family code"><button class="btn subtle" type="submit">Add</button></form>`
+          : '<span class="sync-pair"><button class="btn subtle" data-sync="fshare">Share</button><button class="btn subtle" data-sync="fadd">Add</button></span>',
+      ' sub',
+    );
+    for (const m of fam.members) html += row(esc(m.email), 'Can read the books in your Drive', `<button class="btn subtle" data-sync="fstop" data-id="${esc(m.id)}">Stop sharing</button>`, ' sub sync-fam');
+    for (const l of fam.libraries) html += row(`${esc(ownerName(l.email))}’s library`, `${l.books.length} book${l.books.length === 1 ? '' : 's'} · in your Library`, `<button class="btn subtle" data-sync="fleave" data-id="${esc(l.owner)}">Remove</button>`, ' sub sync-fam');
+    return html;
+  }
+
   group.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-sync]');
     if (!b) return;
     const act = b.dataset.sync;
+    if (act === 'fshare' || act === 'fadd' || act === 'fstop' || act === 'fleave') {
+      famNote = '';
+      if (navigator.onLine === false) {
+        famNote = 'You’re offline. Connect to the internet for family libraries.';
+        return draw();
+      }
+      b.disabled = true;
+      try {
+        if (act === 'fshare') {
+          const r = await shareCode();
+          famCode = { code: r.code, until: Date.now() + (r.expiresIn || 86400) * 1000 };
+        } else if (act === 'fadd') {
+          famEntering = true;
+        } else if (act === 'fstop') {
+          if (!confirm('Stop sharing your library with this person? Books they already downloaded stay on their devices.')) return (b.disabled = false);
+          await stopSharingWith(b.dataset.id);
+        } else {
+          if (!confirm('Remove this family library from your Library? Books you downloaded from it stay.')) return (b.disabled = false);
+          await leaveFamily(b.dataset.id);
+        }
+      } catch (err) {
+        famNote = String(err.message || 'Something went wrong.');
+      }
+      return draw();
+    }
     if (act === 'google') {
       if (navigator.onLine === false) {
         note = 'You’re offline. Connect to the internet to sign in.';
@@ -161,6 +216,16 @@ export function mountSyncSettings(group) {
     const code = form.elements.code.value.trim();
     if (!code) return;
     form.querySelector('button').disabled = true;
+    if (form.dataset.syncForm === 'family') {
+      try {
+        await joinFamily(code);
+        famEntering = false;
+        famNote = 'Added. The library is at the end of your Library.';
+      } catch (err) {
+        famNote = String(err.message || 'That code didn’t work.');
+      }
+      return draw();
+    }
     try {
       await linkWithCode(code);
       entering = false;
@@ -186,5 +251,6 @@ export function mountSyncSettings(group) {
   };
   draw();
   runSync();
+  if (status().signedIn) familyList(true).then(update, () => {});
   return stop;
 }

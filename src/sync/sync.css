@@ -95,3 +95,17 @@
   background: var(--accent);
   transition: width 0.2s;
 }
+
+.sync-input.wide {
+  width: 9.5em;
+}
+.sync-pair {
+  display: flex;
+  flex: none;
+}
+.sync-pair .btn + .btn {
+  margin-left: 8px;
+}
+.family-card .card-cover .book3d img {
+  filter: saturate(0.9);
+}

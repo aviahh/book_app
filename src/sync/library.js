@@ -2,6 +2,8 @@
 import './sync.css';
 import { cloudBooks, driveCopy } from './engine.js';
 import { driveOn, downloadBook, removeDownload, removeCloudBook } from './drive.js';
+import { familyList, familyCached, ownerName, downloadFamilyBook } from './family.js';
+import { listBooks } from '../db.js';
 
 export const cloudIcon =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18.5h10.2a4.3 4.3 0 0 0 .6-8.56A6 6 0 0 0 6.3 9.1 4.75 4.75 0 0 0 7 18.5z"/></svg>';
@@ -101,4 +103,101 @@ export async function cloudMenuAction(m, book, view, nav) {
     return 'Removed from library';
   }
   return null;
+}
+
+// ---------------------------------------------------------------- family libraries
+
+const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+/** Libraries shared with this account: the last list at once (never waits for the network), refreshed in the background. */
+export async function familyLibraries() {
+  const last = familyCached();
+  const fresh = familyList(true).catch(() => null);
+  const list = last || (await Promise.race([fresh, new Promise((r) => setTimeout(r, 1200))]));
+  return list ? list.libraries.filter((l) => l.books.length) : [];
+}
+
+/** One shelf card per family library, for the end of the library grid. */
+export function familyShelves(libraries) {
+  return libraries
+    .map((lib) => {
+      const covers = lib.books.filter((b) => b.cover).slice(0, 3);
+      const n = lib.books.length;
+      return `
+        <article class="card series-card family-card">
+          <a class="card-cover stacked" href="#/library?family=${encodeURIComponent(lib.owner)}" aria-label="${escHtml(ownerName(lib.email))}’s library, ${n} books">
+            ${covers.map((b, i) => `<span class="book3d s${covers.length - 1 - i}" style="--ar:${(b.meta && b.meta.aspect) || 0.7}"><img src="${b.cover}" alt="" loading="lazy"></span>`).join('')}
+            <span class="badge count">${n}</span>
+          </a>
+          <div class="card-info"><div class="card-text"><h3>${escHtml(ownerName(lib.email))}’s library</h3><p>Family · ${n} book${n === 1 ? '' : 's'}</p></div></div>
+        </article>`;
+    })
+    .join('');
+}
+
+/** The page of one family library: its books; opening one downloads it to this device. */
+export async function mountFamilyPage(content, owner, view, nav, toast) {
+  content.innerHTML = `
+    <section class="lib-head series-head">
+      <div>
+        <a class="crumb" href="#/library">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>'}<span>Library</span></a>
+        <h1>Family library</h1>
+        <p class="lib-count"></p>
+      </div>
+    </section>
+    <section class="grid" aria-live="polite"></section>`;
+  const grid = content.querySelector('.grid');
+  let lib = null;
+  let local = new Map();
+  async function draw(fresh) {
+    try {
+      lib = (await familyList(fresh)).libraries.find((l) => l.owner === owner) || null;
+    } catch (e) {
+      lib = null;
+    }
+    if (!lib) {
+      content.querySelector('h1').textContent = 'Family library';
+      content.querySelector('.lib-count').textContent = '';
+      grid.innerHTML = `<p class="no-results">${navigator.onLine === false ? 'You’re offline. Family libraries need a connection.' : 'This library isn’t shared with you any more.'}</p>`;
+      return;
+    }
+    local = new Map((await listBooks()).filter((b) => b.syncId).map((b) => [b.syncId, b]));
+    content.querySelector('h1').textContent = `${ownerName(lib.email)}’s library`;
+    content.querySelector('.lib-count').textContent = `${lib.books.length} book${lib.books.length === 1 ? '' : 's'} · shared by ${lib.email} · your progress is your own`;
+    const books = lib.books.slice().sort((a, b) => (a.meta.title || '').localeCompare(b.meta.title || ''));
+    grid.innerHTML = books
+      .map((b) => {
+        const here = local.get(b.sid);
+        return `
+        <article class="card${here ? '' : ' is-cloud'}" data-sid="${escHtml(b.sid)}">
+          <a class="card-cover" href="${here ? `#/read/${here.id}` : '#'}" aria-label="Open ${escHtml(b.meta.title)}">
+            <span class="book3d" style="--ar:${b.meta.aspect || 0.7}">${b.cover ? `<img src="${b.cover}" alt="" loading="lazy">` : ''}</span>
+            ${here ? '' : `<span class="badge cloud" title="Tap to download">${cloudIcon}</span>`}
+          </a>
+          <div class="card-info"><div class="card-text"><h3>${escHtml(b.meta.title)}</h3><p>${escHtml(b.meta.author || (b.meta.pageCount ? `${b.meta.pageCount} pages` : ''))}</p></div></div>
+        </article>`;
+      })
+      .join('');
+  }
+  grid.addEventListener('click', async (e) => {
+    const card = e.target.closest('.card.is-cloud');
+    if (!card || !lib) return;
+    e.preventDefault();
+    const b = lib.books.find((x) => x.sid === card.dataset.sid);
+    const el = document.createElement('div');
+    el.className = 'import-overlay';
+    el.innerHTML = `<div class="import-card"><div class="spinner"></div><p class="import-title">Downloading from ${escHtml(ownerName(lib.email))}’s library</p><p class="import-name"></p><div class="sync-bar"><i></i></div></div>`;
+    el.querySelector('.import-name').textContent = b.meta.title;
+    view.append(el);
+    try {
+      const book = await downloadFamilyBook(owner, b, (f) => (el.querySelector('.sync-bar i').style.width = `${Math.round(f * 100)}%`));
+      el.remove();
+      if (book) nav(`#/read/${book.id}`);
+    } catch (err) {
+      el.remove();
+      toast(view, err.message || 'Download failed', 4000);
+    }
+  });
+  await draw(false);
+  draw(true); // and refresh from the server
 }

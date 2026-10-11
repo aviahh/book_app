@@ -42,6 +42,9 @@ const SCHEMA = [
   // One-time codes: sign-in hand-over (after Google), device linking, and OAuth state.
   `CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id TEXT, data TEXT, expires INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS attempts (ip TEXT NOT NULL, hour INTEGER NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (ip, hour))`,
+  // Family libraries: the member may read the books in the owner's Drive.
+  `CREATE TABLE IF NOT EXISTS shares (owner_id TEXT NOT NULL, member_id TEXT NOT NULL, created_at INTEGER, PRIMARY KEY (owner_id, member_id))`,
+  `CREATE INDEX IF NOT EXISTS shares_member ON shares(member_id)`,
 ];
 
 let schemaReady = null;
@@ -180,9 +183,14 @@ async function driveConnect(url, dev, env) {
 
 /** A short-lived Drive access token for this account (the app talks to Drive itself). */
 async function driveToken(dev, env) {
-  const row = await env.DB.prepare(`SELECT grant_enc FROM users WHERE id = ?`).bind(dev.userId).first();
-  if (!row || !row.grant_enc) return fail(409, 'no-drive');
-  if (row.grant_enc === 'dev' && env.DEV_LOGIN === '1') return json({ token: 'dev-token', expiresIn: 3600 });
+  const r = await accessTokenFor(env, dev.userId);
+  return r.error ? fail(r.status, r.error) : json({ token: r.token, expiresIn: r.expiresIn });
+}
+
+async function accessTokenFor(env, userId) {
+  const row = await env.DB.prepare(`SELECT grant_enc FROM users WHERE id = ?`).bind(userId).first();
+  if (!row || !row.grant_enc) return { status: 409, error: 'no-drive' };
+  if (row.grant_enc === 'dev' && env.DEV_LOGIN === '1') return { token: 'dev-token', expiresIn: 3600 };
   const res = await fetch(GOOGLE_TOKEN, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -197,12 +205,12 @@ async function driveToken(dev, env) {
   if (!res.ok) {
     // Access was withdrawn in the Google account: forget it, so the switch shows off.
     if (data.error === 'invalid_grant') {
-      await env.DB.prepare(`UPDATE users SET grant_enc = NULL WHERE id = ?`).bind(dev.userId).run();
-      return fail(409, 'no-drive');
+      await env.DB.prepare(`UPDATE users SET grant_enc = NULL WHERE id = ?`).bind(userId).run();
+      return { status: 409, error: 'no-drive' };
     }
-    return fail(502, 'Google didn’t answer');
+    return { status: 502, error: 'Google didn’t answer' };
   }
-  return json({ token: data.access_token, expiresIn: data.expires_in || 3600 });
+  return { token: data.access_token, expiresIn: data.expires_in || 3600 };
 }
 
 async function driveDisconnect(dev, env) {
@@ -291,6 +299,89 @@ async function devLogin(url, env) {
   const userId = await upsertUser(env, 'dev:' + email, email);
   const code = await putCode(env, 'login', 5, { userId, data: JSON.stringify({ name: url.searchParams.get('name') || '' }) });
   return Response.redirect(`${url.origin}/#/settings?signin=${code}`, 302);
+}
+
+// ---------------------------------------------------------------- family libraries
+//
+// An owner shares with a code; whoever enters it may list the owner's books
+// that are in Drive (title, cover) and download them, streamed from the
+// owner's Drive through here. Nothing is stored or copied on the way, and
+// the reader's progress stays in the reader's own account.
+
+async function familyInvite(dev, env) {
+  const g = await env.DB.prepare(`SELECT grant_enc FROM users WHERE id = ?`).bind(dev.userId).first();
+  if (!g || !g.grant_enc) return fail(409, 'Turn on “Keep books in Google Drive” first: family read the books from there.');
+  const code = await putCode(env, 'family', 24 * 60, { userId: dev.userId, length: 8 });
+  return json({ code, expiresIn: 24 * 3600 });
+}
+
+async function familyJoin(request, dev, env) {
+  const tries = await tooManyTries(env, request);
+  if (tries.blocked) return fail(429, 'Too many tries. Wait an hour.');
+  const body = await readBody(request);
+  const code = String((body && body.code) || '')
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, '');
+  const row = code.length === 8 && (await takeCode(env, 'family', code));
+  if (!row) {
+    await countTry(env, tries);
+    return fail(400, 'That code didn’t work. Family codes last a day.');
+  }
+  if (row.user_id === dev.userId) return fail(400, 'That’s your own library.');
+  await env.DB.prepare(`INSERT OR IGNORE INTO shares (owner_id, member_id, created_at) VALUES (?, ?, ?)`).bind(row.user_id, dev.userId, Date.now()).run();
+  return json({ ok: true });
+}
+
+/** Libraries shared with me (their books in Drive), and who I share mine with. */
+async function familyList(dev, env) {
+  const db = env.DB;
+  const owners = (await db.prepare(`SELECT s.owner_id AS id, u.email FROM shares s JOIN users u ON u.id = s.owner_id WHERE s.member_id = ?`).bind(dev.userId).all()).results;
+  const members = (await db.prepare(`SELECT s.member_id AS id, u.email FROM shares s JOIN users u ON u.id = s.member_id WHERE s.owner_id = ?`).bind(dev.userId).all()).results;
+  const libraries = [];
+  for (const o of owners) {
+    const { results } = await db
+      .prepare(`SELECT k, v FROM items WHERE user_id = ? AND deleted = 0 AND (k LIKE 'b:%:meta' OR k LIKE 'b:%:cover' OR k LIKE 'b:%:drive' OR k LIKE 'b:%:series')`)
+      .bind(o.id)
+      .all();
+    const by = new Map();
+    for (const r of results) {
+      const m = /^b:([0-9a-f]+):(\w+)$/.exec(r.k);
+      if (!m) continue;
+      if (!by.has(m[1])) by.set(m[1], { sid: m[1] });
+      const v = JSON.parse(r.v);
+      by.get(m[1])[m[2]] = m[2] === 'drive' ? { size: v && v.size } : v; // the file's Drive id stays private
+    }
+    libraries.push({ owner: o.id, email: o.email, books: [...by.values()].filter((b) => b.meta && b.drive) });
+  }
+  return json({ libraries, members });
+}
+
+async function familyRemove(request, dev, env) {
+  const body = (await readBody(request)) || {};
+  if (body.member) await env.DB.prepare(`DELETE FROM shares WHERE owner_id = ? AND member_id = ?`).bind(dev.userId, String(body.member)).run();
+  if (body.owner) await env.DB.prepare(`DELETE FROM shares WHERE owner_id = ? AND member_id = ?`).bind(String(body.owner), dev.userId).run();
+  return json({ ok: true });
+}
+
+/** A book from a family library, streamed from the owner's Drive. */
+async function familyFile(url, dev, env) {
+  const owner = url.searchParams.get('owner') || '';
+  const sid = url.searchParams.get('sid') || '';
+  if (!/^[0-9a-f]{8,64}$/.test(sid)) return fail(400, 'Bad request');
+  const share = await env.DB.prepare(`SELECT 1 AS ok FROM shares WHERE owner_id = ? AND member_id = ?`).bind(owner, dev.userId).first();
+  if (!share) return fail(403, 'This library isn’t shared with you any more.');
+  const item = await env.DB.prepare(`SELECT v FROM items WHERE user_id = ? AND k = ? AND deleted = 0`).bind(owner, `b:${sid}:drive`).first();
+  const copy = item && JSON.parse(item.v);
+  if (!copy || !copy.id) return fail(404, 'This book is no longer in the shared library.');
+  const tok = await accessTokenFor(env, owner);
+  if (tok.error) return fail(409, 'The owner’s Google Drive isn’t connected any more.');
+  const api = env.DEV_LOGIN === '1' && env.DRIVE_API ? env.DRIVE_API : 'https://www.googleapis.com'; // a stand-in Drive, for local tests only
+  const url2 = `${api}/drive/v3/files/${encodeURIComponent(copy.id)}?alt=media`;
+  const res = await fetch(url2, { headers: { Authorization: 'Bearer ' + tok.token } });
+  if (!res.ok) return fail(res.status === 404 ? 404 : 502, 'Couldn’t get the book from Google Drive.');
+  const headers = { 'Content-Type': res.headers.get('Content-Type') || 'application/octet-stream', 'Cache-Control': 'no-store' };
+  if (res.headers.get('Content-Length')) headers['Content-Length'] = res.headers.get('Content-Length');
+  return new Response(res.body, { headers });
 }
 
 // ---------------------------------------------------------------- endpoints
@@ -403,7 +494,7 @@ async function sync(request, dev, env) {
 export async function handleSync(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
-  if (!/^\/api\/(auth|pair|sync|drive)(\/|$)/.test(path)) return null;
+  if (!/^\/api\/(auth|pair|sync|drive|family)(\/|$)/.test(path)) return null;
   if (!env.DB) return fail(503, 'Sync is not set up yet.');
   await ensureSchema(env.DB);
 
@@ -411,6 +502,10 @@ export async function handleSync(request, env) {
     if (path === '/api/auth/google/start') return googleStart(url, env);
     if (path === '/api/auth/google/callback') return googleCallback(url, env);
     if (path === '/api/auth/dev') return devLogin(url, env);
+    if (path === '/api/family/file') {
+      const dev = await deviceOf(request, env);
+      return dev ? familyFile(url, dev, env) : fail(401, 'signed-out');
+    }
     return fail(404, 'Not found');
   }
   if (request.method !== 'POST') return fail(405, 'Method not allowed');
@@ -429,5 +524,9 @@ export async function handleSync(request, env) {
   if (path === '/api/drive/connect') return driveConnect(url, dev, env);
   if (path === '/api/drive/token') return driveToken(dev, env);
   if (path === '/api/drive/disconnect') return driveDisconnect(dev, env);
+  if (path === '/api/family/invite') return familyInvite(dev, env);
+  if (path === '/api/family/join') return familyJoin(request, dev, env);
+  if (path === '/api/family/list') return familyList(dev, env);
+  if (path === '/api/family/remove') return familyRemove(request, dev, env);
   return fail(404, 'Not found');
 }

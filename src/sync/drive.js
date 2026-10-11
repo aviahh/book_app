@@ -13,6 +13,7 @@
 import { listBooks, getBookFile, removeBook } from '../db.js';
 import { importFile } from '../pdf.js';
 import { account, post, noteDrive, driveCopy, cloudBooks, onRemovedEverywhere, removeEverywhere } from './engine.js';
+import { isFamilyBook } from './family.js';
 
 const API = 'https://www.googleapis.com';
 const FOLDER_KEY = 'folio.drive.v1';
@@ -101,7 +102,8 @@ export const onDriveProgress = (fn) => (listeners.add(fn), () => listeners.delet
 export function keepBooksInDrive() {
   if (!driveOn() || busy || navigator.onLine === false) return busy || Promise.resolve();
   busy = (async () => {
-    const books = (await listBooks()).filter((b) => b.syncId);
+    // Books from a family library stay out of this account's Drive.
+    const books = (await listBooks()).filter((b) => b.syncId && !isFamilyBook(b.syncId));
     progress.total = books.length;
     progress.done = 0;
     for (const b of books) {
@@ -132,7 +134,7 @@ export function keepBooksInDrive() {
 
 /** How many of the books here are in Drive: { done, total, uploading }. */
 export async function driveSummary() {
-  const books = (await listBooks()).filter((b) => b.syncId);
+  const books = (await listBooks()).filter((b) => b.syncId && !isFamilyBook(b.syncId));
   let done = 0;
   for (const b of books) if (await driveCopy(b.syncId)) done++;
   return { done, total: books.length, uploading: progress.uploading };
