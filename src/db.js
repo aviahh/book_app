@@ -49,26 +49,46 @@ export async function getBookFile(id) {
   return tx(['files'], 'readonly', (t) => wrap(t.objectStore('files').get(id)));
 }
 
-export async function addBook(book, file) {
-  return tx(['books', 'files'], 'readwrite', (t) => {
+// Listeners hear every change to the library once it is saved (sync uses
+// this). `source` is 'sync' when the change came from another device.
+const listeners = new Set();
+export function onBooksChange(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+function emit(type, id, data, source) {
+  for (const fn of listeners) {
+    try {
+      fn({ type, id, data, source });
+    } catch (e) {
+      console.error(e);
+    }
+  }
+}
+
+export async function addBook(book, file, source) {
+  await tx(['books', 'files'], 'readwrite', (t) => {
     t.objectStore('books').put(book);
     t.objectStore('files').put(file, book.id);
   });
+  emit('add', book.id, book, source);
 }
 
-export async function updateBook(id, patch) {
-  return tx(['books'], 'readwrite', async (t) => {
+export async function updateBook(id, patch, source) {
+  await tx(['books'], 'readwrite', async (t) => {
     const store = t.objectStore('books');
     const book = await wrap(store.get(id));
     if (book) store.put({ ...book, ...patch });
   });
+  emit('update', id, patch, source);
 }
 
-export async function removeBook(id) {
-  return tx(['books', 'files'], 'readwrite', (t) => {
+export async function removeBook(id, source) {
+  await tx(['books', 'files'], 'readwrite', (t) => {
     t.objectStore('books').delete(id);
     t.objectStore('files').delete(id);
   });
+  emit('remove', id, null, source);
 }
 
 export async function requestPersistence() {

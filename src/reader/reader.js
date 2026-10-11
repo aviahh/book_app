@@ -20,6 +20,7 @@ import { collectSpans, hitTest, wordAt, selectableAt, rangeRects, rangeText, pag
 import { OrientationLock } from './orientation.js';
 import { ThumbStrip } from './thumbs.js';
 import { ReaderTools } from './tools.js';
+import { onRemoteBook } from '../sync/index.js';
 
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 340;
@@ -159,6 +160,8 @@ class Reader {
     window.scrollTo(0, 0);
     this.cleanups.push(onSettingsChange((s) => this.#applySettings(s)));
     this.cleanups.push(trackReading(() => !document.hidden));
+    // Changes from your other devices (sync): bookmarks and marks follow at once; a newer place is offered, never forced.
+    this.cleanups.push(onRemoteBook((id, patch, info) => id === this.book.id && this.#remoteChange(patch, info)));
     this.#applySettings(this.settings);
     this.startPage = Math.min(book.lastPage || 1, this.total);
     // The reading position: the page being read, kept in place while you look
@@ -403,6 +406,31 @@ class Reader {
     rib.hidden = false;
     this.ribbonPage = key;
     if (this.ribMenu && !this.ribMenu.hidden) this.#placeRibMenu();
+  }
+
+  #remoteChange(patch, info) {
+    for (const k of ['bookmarks', 'stopMark', 'seriesName', 'seriesIndex', 'finished']) if (k in patch) this.book[k] = patch[k];
+    if (this.tools) this.tools.decorateAll();
+    const n = patch.lastPage;
+    if (!n || visiblePages(spreadPages(this.mode, this.spread, this.total)).includes(n)) return;
+    let pill = this.el.querySelector('.sync-pill');
+    if (!pill) {
+      pill = document.createElement('div');
+      pill.className = 'return-pill sync-pill';
+      pill.innerHTML = `<button class="rp-go">${icons.bookmark}<span></span></button><button class="rp-x" aria-label="Stay here">${icons.close}</button>`;
+      pill.querySelector('.rp-go').addEventListener('click', async () => {
+        pill.hidden = true;
+        await this.#jumpTo(pill.page);
+        this.#readFromHere();
+      });
+      pill.querySelector('.rp-x').addEventListener('click', () => (pill.hidden = true));
+      this.el.append(pill);
+    }
+    pill.page = n;
+    pill.querySelector('.rp-go span').textContent = `Continue at p. ${n}${info && info.from ? ` · ${info.from}` : ''}`;
+    pill.hidden = false;
+    clearTimeout(this.syncPillTimer);
+    this.syncPillTimer = setTimeout(() => (pill.hidden = true), 15000);
   }
 
   /** Make the page being read now the reading position (the hollow ribbon fills in). */
