@@ -656,6 +656,38 @@
   animation: pill-in 0.25s ease;
   max-width: calc(100% - 32px);
 }
+/* "Continuous" switch, shown while waiting for a passage */
+.tts-mode {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px 0 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(239, 232, 220, 0.85);
+  font-size: 0.82rem;
+  font-weight: 560;
+}
+.tts-mode::before {
+  content: '';
+  flex: none;
+  width: 26px;
+  height: 16px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.22) radial-gradient(circle at 8px 8px, #f7f3ec 5px, transparent 5.5px);
+  transition: background 0.2s;
+}
+.tts-mode[aria-checked='true'] {
+  color: #f7f3ec;
+}
+.tts-mode[aria-checked='true']::before {
+  background: #d2a26c radial-gradient(circle at 18px 8px, #fff 5px, transparent 5.5px);
+}
+.no-flexgap .tts-mode::before {
+  margin-right: 8px;
+}
 .tts-label {
   flex: 0 1 auto;
   min-width: 0;
@@ -715,6 +747,7 @@
 .tts-bar[data-state='ready'] .tts-wave,
 .tts-bar[data-state='ready'] [data-act='ttsToggle'],
 .tts-bar[data-state='ready'] [data-act='ttsBack'],
+.tts-bar:not([data-state='ready']) .tts-mode,
 .tts-bar[data-state='ready'] [data-act='ttsStop'] {
   display: none;
 }

@@ -196,13 +196,7 @@ const SILENCE = (() => {
 const NEEDS_UNLOCK = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 /**
- * A pausable, chunk-by-chunk speech player.
- *
- * The Microsoft voice is downloaded piece by piece and played from memory
- * (blob URLs): iOS Safari refuses to play audio straight from a server that
- * streams it without byte-range support, which our voice relay does. The
- * first piece is short, so playback still starts quickly, and the next pieces
- * download while the current one plays.
+ * A pausable, piece-by-piece speech player.
  *
  * Two ways to use it:
  *  - speak(text): one passage, split into pieces here;
@@ -210,9 +204,47 @@ const NEEDS_UNLOCK = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.pla
  *    pieces (sentences, each short enough for every voice) or null at the
  *    end; it is asked for more while earlier pieces play. `onPiece(i)` hears
  *    each piece as it starts, so the reader can highlight it and turn pages.
- *    Only the last few pieces are kept for rewinding (back()).
+ *
+ * The Microsoft voice plays gaplessly through Web Audio: upcoming pieces are
+ * downloaded and decoded ahead (READY_AHEAD), and a couple are already placed
+ * on the audio clock (QUEUED_AHEAD) so each one starts the instant the
+ * previous one ends, even if the page is busy or in the background. Each
+ * clip's own leading and trailing silence is trimmed and replaced by a pause
+ * that fits the punctuation, so sentences flow like one recording.
+ * The Google voice (and any browser without Web Audio) plays through two
+ * <audio> elements: one plays while the other holds the next piece.
+ *
+ * Only the last few pieces are kept behind the current one (for back()).
  */
 const KEEP_BACK = 3; // pieces kept behind the current one (a few lines)
+const READY_AHEAD = 4; // pieces downloaded and decoded ahead (Microsoft voice)
+const QUEUED_AHEAD = 2; // pieces already scheduled on the audio clock beyond the current one
+const MAX_FETCHES = 3; // voice requests in flight at once
+const AC = window.AudioContext || window.webkitAudioContext;
+
+const decode = (ctx, data) =>
+  new Promise((resolve, reject) => {
+    // Old Safari only has the callback form.
+    const p = ctx.decodeAudioData(data, resolve, reject);
+    if (p && p.then) p.then(resolve, reject);
+  });
+
+/** Where the voice really starts and ends in a clip, and the pause to leave after it. */
+function trimClip(buffer, text) {
+  const d = buffer.getChannelData(0);
+  const sr = buffer.sampleRate;
+  const quiet = 0.006;
+  let a = 0;
+  while (a < d.length && Math.abs(d[a]) < quiet) a++;
+  let b = d.length - 1;
+  while (b > a && Math.abs(d[b]) < quiet) b--;
+  if (b <= a) return { offset: 0, length: buffer.duration, slot: buffer.duration };
+  const t = text.trim();
+  const pause = /[.!?…]["'”’)\]]*$/.test(t) ? 0.3 : /[,;:—–]["'”’)\]]*$/.test(t) ? 0.16 : 0.05;
+  const offset = Math.max(0, a / sr - 0.025);
+  const voiceEnd = b / sr + 0.03;
+  return { offset, length: Math.min(buffer.duration, voiceEnd + pause) - offset, slot: voiceEnd - offset + pause };
+}
 
 export class Speech {
   constructor({ onState, voice = () => 'microsoft', onPiece } = {}) {
@@ -228,9 +260,17 @@ export class Speech {
     }
     this.state = 'idle';
     this.gen = 0;
+    this.session = 0;
     this.blobs = new Map();
+    this.clips = new Map();
     this.chunks = [];
     this.index = 0;
+    this.fetching = 0;
+    this.waiting = [];
+    document.addEventListener('visibilitychange', () => {
+      // iOS can suspend the audio clock while the app is away.
+      if (!document.hidden && this.wa && this.state === 'playing' && this.ctx.state !== 'running') this.ctx.resume();
+    });
   }
 
   get active() {
@@ -239,6 +279,19 @@ export class Speech {
 
   /** Call from inside a tap (e.g. the speaker button): lets audio start later without one. */
   unlock() {
+    if (AC) {
+      try {
+        if (!this.ctx) this.ctx = new AC();
+        if (this.ctx.state !== 'running') this.ctx.resume();
+        // A moment of silence through the clock, inside the tap (older iOS needs it).
+        const s = this.ctx.createBufferSource();
+        s.buffer = this.ctx.createBuffer(1, 1, 22050);
+        s.connect(this.ctx.destination);
+        s.start(0);
+        // iOS: speech is real playback, not a sound effect (so the ring/silent switch doesn't mute it).
+        if (navigator.audioSession) navigator.audioSession.type = 'playback';
+      } catch (e) {}
+    }
     if (this.active || !NEEDS_UNLOCK) return;
     for (const a of this.players) {
       delete a.dataset.real;
@@ -246,6 +299,14 @@ export class Speech {
       const p = a.play();
       if (p && p.then) p.then(() => a.pause()).catch(() => {});
     }
+    if (!this.keepAlive) {
+      // Older iOS mutes Web Audio with the silent switch unless an <audio>
+      // element is playing too: a silent, looping one keeps it audible.
+      this.keepAlive = new Audio(SILENCE);
+      this.keepAlive.loop = true;
+    }
+    const k = this.keepAlive.play();
+    if (k && k.then) k.then(() => !this.active && this.keepAlive.pause()).catch(() => {});
     if (!this.speechUnlocked && 'speechSynthesis' in window) {
       this.speechUnlocked = true;
       try {
@@ -308,26 +369,52 @@ export class Speech {
     return i < this.chunks.length && this.chunks[i] != null;
   }
 
-  /** A playable URL for piece i: a downloaded blob for the Microsoft voice, the direct address for Google's. */
-  #src(i) {
-    if (this.provider !== 'edge') return Promise.resolve(urlFor(this.provider, this.chunks[i], this.lang));
-    if (!this.blobs.has(i)) {
-      const url = urlFor(this.provider, this.chunks[i], this.lang);
-      const get = () =>
-        Promise.race([
-          fetch(url),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
-        ])
-          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
-          .then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? URL.createObjectURL(b) : Promise.reject(new Error('no audio'))));
+  /** Download piece i from the Microsoft voice (a few at a time, each retried once). */
+  #download(i) {
+    const url = urlFor('edge', this.chunks[i], this.lang);
+    const get = () =>
+      Promise.race([fetch(url), new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))]).then((r) =>
+        r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status)),
+      );
+    const slot = () =>
+      this.fetching < MAX_FETCHES ? Promise.resolve() : new Promise((r) => this.waiting.push(r));
+    return slot().then(() => {
+      this.fetching++;
+      const done = () => {
+        this.fetching--;
+        const next = this.waiting.shift();
+        if (next) next();
+      };
       // A passing hiccup (weak Wi-Fi, a busy moment at the voice service)
       // shouldn't swap the voice: try again before giving up on it.
-      this.blobs.set(
+      const p = get()
+        .catch(() => new Promise((r) => setTimeout(r, 600)).then(get))
+        .then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? b : Promise.reject(new Error('no audio'))));
+      p.then(done, done);
+      return p;
+    });
+  }
+
+  /** A playable URL for piece i (<audio> path): a blob for the Microsoft voice, the direct address for Google's. */
+  #src(i) {
+    if (this.provider !== 'edge') return Promise.resolve(urlFor(this.provider, this.chunks[i], this.lang));
+    if (!this.blobs.has(i)) this.blobs.set(i, this.#download(i).then((b) => URL.createObjectURL(b)));
+    return this.blobs.get(i);
+  }
+
+  /** Piece i decoded and trimmed, ready for the audio clock (Web Audio path). */
+  #clip(i) {
+    if (!this.clips.has(i)) {
+      const text = this.chunks[i];
+      this.clips.set(
         i,
-        get().catch(() => new Promise((r) => setTimeout(r, 600)).then(get)),
+        this.#download(i)
+          .then((b) => b.arrayBuffer())
+          .then((data) => decode(this.ctx, data))
+          .then((buffer) => ({ buffer, ...trimClip(buffer, text) })),
       );
     }
-    return this.blobs.get(i);
+    return this.clips.get(i);
   }
 
   #freeBlobs(keep = () => false) {
@@ -336,6 +423,7 @@ export class Speech {
       p.then((u) => u.indexOf('blob:') === 0 && URL.revokeObjectURL(u), () => {});
       this.blobs.delete(i);
     }
+    for (const i of [...this.clips.keys()]) if (!keep(i)) this.clips.delete(i);
   }
 
   /** Forget what lies more than a few pieces behind (audio, and the text of a continuous reading). */
@@ -344,6 +432,110 @@ export class Speech {
     this.#freeBlobs((i) => i >= first);
     if (this.feed) for (let i = Math.max(0, first - 4); i < first; i++) this.chunks[i] = null;
   }
+
+  /** (Re)start playback at piece i with the current provider. */
+  #playFrom(i) {
+    this.#waStop();
+    const gen = ++this.gen;
+    for (const a of this.players) {
+      delete a.dataset.real;
+      a.pause();
+    }
+    this.index = i;
+    this.cur = 0;
+    this.#set('loading');
+    if (this.provider === 'edge' && this.ctx) return this.#waStart(i, gen);
+    return this.#elStart(i, gen);
+  }
+
+  // ---- Web Audio (gapless) path
+
+  #waStart(i, gen) {
+    this.wa = { gen, queue: [], next: 0, nextIndex: i, shown: -1, ended: false, pumping: false };
+    if (this.ctx.state !== 'running') this.ctx.resume();
+    if (this.keepAlive) this.keepAlive.play().catch(() => {});
+    this.waTimer = setInterval(() => this.#waTick(), 40);
+    this.#waPump();
+  }
+
+  #waStop() {
+    clearInterval(this.waTimer);
+    const wa = this.wa;
+    this.wa = null;
+    if (!wa) return;
+    for (const q of wa.queue) {
+      try {
+        q.src.onended = null;
+        q.src.stop();
+        q.src.disconnect();
+      } catch (e) {}
+    }
+  }
+
+  /** Keep the clock fed: decode ahead, and schedule pieces back to back. */
+  async #waPump() {
+    const wa = this.wa;
+    if (!wa || wa.pumping || wa.ended) return;
+    wa.pumping = true;
+    try {
+      while (this.wa === wa) {
+        const now = this.ctx.currentTime;
+        // Download and decode the next few in the background.
+        for (let k = wa.nextIndex; k < wa.nextIndex + READY_AHEAD; k++) {
+          if (k < this.chunks.length && this.chunks[k] != null) this.#clip(k).catch(() => {});
+        }
+        if (this.chunks.length < wa.nextIndex + READY_AHEAD && !this.feedDone) this.#ensure(wa.nextIndex + READY_AHEAD - 1);
+        const queued = wa.queue.filter((q) => q.end > now).length;
+        if (queued > QUEUED_AHEAD) break; // enough on the clock; the tick calls again
+        if (!(await this.#ensure(wa.nextIndex))) {
+          if (this.wa === wa && this.feedDone) wa.ended = true;
+          break;
+        }
+        const i = wa.nextIndex;
+        const clip = await this.#clip(i);
+        if (this.wa !== wa) return;
+        const src = this.ctx.createBufferSource();
+        src.buffer = clip.buffer;
+        src.connect(this.ctx.destination);
+        // Right after the previous piece, or now if we fell behind (a slow connection).
+        const at = Math.max(wa.next, this.ctx.currentTime + 0.05);
+        src.start(at, clip.offset, clip.length);
+        wa.queue.push({ i, src, start: at, end: at + clip.slot });
+        wa.next = at + clip.slot;
+        wa.nextIndex = i + 1;
+      }
+    } catch (e) {
+      if (this.wa === wa) {
+        wa.pumping = false;
+        return this.#onError();
+      }
+    }
+    wa.pumping = false;
+  }
+
+  #waTick() {
+    const wa = this.wa;
+    if (!wa) return;
+    const now = this.ctx.currentTime;
+    const cur = wa.queue.find((q) => now >= q.start && now < q.end);
+    if (cur && cur.i !== wa.shown) {
+      wa.shown = cur.i;
+      this.index = cur.i;
+      if (this.state === 'loading') this.#set('playing');
+      this.onPiece(cur.i);
+      this.#forgetOld();
+    }
+    // Drop finished pieces from the queue.
+    while (wa.queue.length && wa.queue[0].end < now - 1) wa.queue.shift();
+    if (wa.ended && !wa.queue.some((q) => q.end > now)) {
+      this.#waStop();
+      if (this.keepAlive) this.keepAlive.pause();
+      return this.#set('idle', true);
+    }
+    if (!wa.pumping) this.#waPump();
+  }
+
+  // ---- <audio> element path
 
   async #load(player, i, gen) {
     if (!(await this.#ensure(i))) return false;
@@ -355,22 +547,7 @@ export class Speech {
     return true;
   }
 
-  /** Download the piece after next too (Microsoft voice), so a slow reply never leaves a gap. */
-  #prefetch(i, gen) {
-    if (this.provider !== 'edge') return;
-    this.#ensure(i).then((ok) => ok && gen === this.gen && this.#src(i).catch(() => {}));
-  }
-
-  /** (Re)start playback at piece i with the current provider. */
-  async #playFrom(i) {
-    const gen = ++this.gen;
-    for (const a of this.players) {
-      delete a.dataset.real;
-      a.pause();
-    }
-    this.index = i;
-    this.cur = 0;
-    this.#set('loading');
+  async #elStart(i, gen) {
     const [a, b] = this.players;
     try {
       if (!(await this.#load(a, i, gen))) {
@@ -383,66 +560,14 @@ export class Speech {
     }
     if (gen !== this.gen) return;
     this.#load(b, i + 1, gen).catch(() => {});
-    this.#prefetch(i + 2, gen);
     this.onPiece(i);
     a.play()
       .then(() => gen === this.gen && this.state === 'loading' && this.#set('playing'))
       .catch((e) => gen === this.gen && this.#playFailed(e));
   }
 
-  /** Back one piece, or to the start of this one if it has been playing a while. */
-  back() {
-    if (!this.active || this.usingFallback) return;
-    const a = this.players[this.cur];
-    if (a.currentTime > 2.5 || !this.canGoBack) {
-      a.currentTime = 0;
-      if (this.state === 'paused') this.resume();
-      return;
-    }
-    this.#playFrom(this.index - 1);
-  }
-
-  get canGoBack() {
-    return this.index > 0 && this.chunks[this.index - 1] != null;
-  }
-
-  pause() {
-    if (this.usingFallback) speechSynthesis.pause();
-    else this.players[this.cur].pause();
-    this.#set('paused');
-  }
-
-  resume() {
-    if (this.usingFallback) speechSynthesis.resume();
-    else this.players[this.cur].play().catch(() => {});
-    this.#set('playing');
-  }
-
-  toggle() {
-    if (this.state === 'paused') this.resume();
-    else if (this.state === 'playing' || this.state === 'loading') this.pause();
-  }
-
-  stop(silent = false) {
-    const wasActive = this.state !== 'idle';
-    this.state = 'idle'; // first, so resetting the players can't trigger fallbacks
-    this.gen++;
-    this.session = (this.session || 0) + 1;
-    for (const a of this.players) {
-      delete a.dataset.real;
-      a.pause();
-      a.removeAttribute('src');
-      a.load();
-    }
-    this.#freeBlobs();
-    this.feeding = null;
-    if (this.usingFallback) speechSynthesis.cancel();
-    this.usingFallback = false;
-    if (!silent && wasActive) this.#set('idle');
-  }
-
   async #advance() {
-    if (this.state === 'idle' || this.usingFallback) return;
+    if (this.state === 'idle' || this.usingFallback || this.wa) return;
     const gen = this.gen;
     this.index++;
     const next = this.players[1 - this.cur];
@@ -464,8 +589,66 @@ export class Speech {
     const spare = this.players[1 - this.cur];
     delete spare.dataset.real;
     this.#load(spare, this.index + 1, gen).catch(() => {});
-    this.#prefetch(this.index + 2, gen);
     this.#forgetOld();
+  }
+
+  // ---- controls
+
+  /** Back one piece, or to the start of this one if it has been playing a while. */
+  back() {
+    if (!this.active || this.usingFallback) return;
+    let elapsed;
+    if (this.wa) {
+      const q = this.wa.queue.find((x) => x.i === this.index);
+      elapsed = q ? this.ctx.currentTime - q.start : 0;
+    } else elapsed = this.players[this.cur].currentTime;
+    const resume = this.state === 'paused';
+    this.#playFrom(elapsed > 2.5 || !this.canGoBack ? this.index : this.index - 1);
+    if (resume && this.ctx && this.ctx.state !== 'running') this.ctx.resume();
+  }
+
+  get canGoBack() {
+    return this.index > 0 && this.chunks[this.index - 1] != null;
+  }
+
+  pause() {
+    if (this.usingFallback) speechSynthesis.pause();
+    else if (this.wa) this.ctx.suspend();
+    else this.players[this.cur].pause();
+    this.#set('paused');
+  }
+
+  resume() {
+    if (this.usingFallback) speechSynthesis.resume();
+    else if (this.wa) this.ctx.resume();
+    else this.players[this.cur].play().catch(() => {});
+    this.#set('playing');
+  }
+
+  toggle() {
+    if (this.state === 'paused') this.resume();
+    else if (this.state === 'playing' || this.state === 'loading') this.pause();
+  }
+
+  stop(silent = false) {
+    const wasActive = this.state !== 'idle';
+    this.state = 'idle'; // first, so resetting the players can't trigger fallbacks
+    this.gen++;
+    this.session++;
+    this.#waStop();
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); // a paused reading leaves the clock stopped
+    if (this.keepAlive) this.keepAlive.pause();
+    for (const a of this.players) {
+      delete a.dataset.real;
+      a.pause();
+      a.removeAttribute('src');
+      a.load();
+    }
+    this.#freeBlobs();
+    this.feeding = null;
+    if (this.usingFallback) speechSynthesis.cancel();
+    this.usingFallback = false;
+    if (!silent && wasActive) this.#set('idle');
   }
 
   /** True when this passage is not in the chosen voice (it had to fall back). */
@@ -484,6 +667,7 @@ export class Speech {
   // provider (Microsoft → Google), and finally the device's own voice.
   #onError() {
     if (this.state === 'idle' || this.usingFallback) return;
+    this.#waStop();
     for (const a of this.players) a.pause();
     this.providers = this.providers.slice(1);
     this.#freeBlobs();

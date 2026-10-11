@@ -7,6 +7,10 @@ export default defineConfig({
   define: {
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
   },
+  // While developing, the voice relay (/api/tts) is the deployed one.
+  server: {
+    proxy: { '/api': { target: 'https://folio-r7k2xq9m.aviahh.workers.dev', changeOrigin: true } },
+  },
   build: {
     // Old iPads stay on iOS 12 (Safari 12): compile syntax down for it, and
     // make the CSS output understandable to it as well.

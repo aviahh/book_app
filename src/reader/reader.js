@@ -6,7 +6,7 @@
 // Both can be pinch-zoomed and panned.
 import { getBook, getBookFile, updateBook } from '../db.js';
 import { openPdf, buildTextLayer, renderPageCanvas, releaseCanvas, canvasOk, ZOOM_PIXELS, LOW_MEMORY } from '../pdf.js';
-import { getSettings, onSettingsChange } from '../settings.js';
+import { getSettings, onSettingsChange, setSetting } from '../settings.js';
 import { icons } from '../icons.js';
 import { Speech, translate, pronounce, stopPronounce, guessLang, isRtl } from '../google.js';
 import { trackReading } from '../stats.js';
@@ -174,7 +174,8 @@ class Reader {
       <button class="zoom-chip" data-act="resetZoom" hidden aria-label="Reset zoom"></button>
       <div class="tts-bar" hidden role="group" aria-label="Read aloud" data-state="ready">
         <span class="tts-wave"><i></i><i></i><i></i><i></i></span>
-        <span class="tts-label" aria-live="polite">Tap where to start reading</span>
+        <span class="tts-label" aria-live="polite"></span>
+        <button data-act="ttsMode" class="tts-mode" role="switch" aria-checked="false">Continuous</button>
         <button data-act="ttsBack" class="tts-btn" aria-label="Back a sentence">${icons.rewind}</button>
         <button data-act="ttsToggle" class="tts-btn" aria-label="Pause">${icons.pause}</button>
         <button data-act="ttsStop" class="tts-btn" aria-label="Stop">${icons.stop}</button>
@@ -1197,6 +1198,9 @@ class Reader {
         return this.speech.stop();
       case 'ttsBack':
         return this.speech.back();
+      case 'ttsMode':
+        setSetting('readContinuous', !this.settings.readContinuous);
+        return this.#onSpeechState(this.speech.state);
       case 'popSpeak': {
         const cur = this.popSound && this.popSound.state;
         if (cur === 'loading') return; // already on its way: extra taps don't queue more
@@ -2237,7 +2241,7 @@ class Reader {
 
   /** A tap on text in read-aloud mode: read from that word on. Returns whether it did. */
   #readFrom(ptr) {
-    if (!this.readMode) return false;
+    if (!this.readMode || !this.settings.readContinuous) return false;
     const spans = collectSpans(this.#textLayers());
     const pos = hitTest(spans, ptr.cx0, ptr.cy0, { mode: 'char', maxDist: 14 });
     if (!pos) return false;
@@ -2320,7 +2324,10 @@ class Reader {
       // The bar stays while read-aloud mode is on, waiting for the next passage.
       bar.hidden = !this.readMode;
       bar.dataset.state = 'ready';
-      bar.querySelector('.tts-label').textContent = 'Tap where to start reading';
+      // Waiting: say how to start, for the chosen way of reading.
+      const on = !!this.settings.readContinuous;
+      bar.querySelector('.tts-label').textContent = on ? 'Tap where to start reading' : 'Drag across a passage';
+      bar.querySelector('[data-act="ttsMode"]').setAttribute('aria-checked', String(on));
       this.aloud = null;
       this.#keepAwake(false);
       return;
