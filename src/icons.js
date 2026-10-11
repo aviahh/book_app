@@ -24,6 +24,7 @@ export const icons = {
   bookmarks: svg('<path d="M9 3.5h9a1 1 0 011 1v14l-5-3.3-5 3.3v-14a1 1 0 011-1z"/><path d="M6 7v13.5l4.5-3"/>'),
   contents: svg('<path d="M9 6.5h11"/><path d="M9 12h11"/><path d="M9 17.5h11"/><circle cx="4.8" cy="6.5" r="1" fill="currentColor"/><circle cx="4.8" cy="12" r="1" fill="currentColor"/><circle cx="4.8" cy="17.5" r="1" fill="currentColor"/>'),
   type: svg('<path d="M3.5 18l4.5-12 4.5 12"/><path d="M5.2 13.5h5.6"/><path d="M14.5 18l3-8 3 8"/><path d="M15.6 15.2h3.8"/>'),
+  manga: svg('<path d="M12 6.5C10 5 7 4.6 4 5v13c3-.4 6 0 8 1.5 2-1.5 5-1.9 8-1.5V5c-3-.4-6 0-8 1.5z"/><path d="M12 6.5v13"/><path d="M8.5 10.5l-2 1.5 2 1.5"/>'),
   hash: svg('<path d="M9.5 4l-2 16"/><path d="M16.5 4l-2 16"/><path d="M4.5 9h16"/><path d="M3.5 15h16"/>'),
   tone: svg('<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor"/>'),
   wand: svg('<path d="M5 19L15.5 8.5"/><path d="M14 7l3 3"/><path d="M18.5 3v3"/><path d="M17 4.5h3"/><path d="M19.5 11.5v2"/><path d="M18.5 12.5h2"/><path d="M10 3.5v2"/><path d="M9 4.5h2"/>'),

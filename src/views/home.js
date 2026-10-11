@@ -104,7 +104,7 @@ export async function mountHome(view, _params, nav) {
       <section class="welcome">
         <div class="welcome-art" aria-hidden="true"><span></span><span></span><span></span></div>
         <h2>Your reading room is ready</h2>
-        <p>Add PDF and EPUB books from this device — they're kept privately on the device and open even without internet.</p>
+        <p>Add PDF, EPUB and comic books from this device — they're kept privately on the device and open even without internet.</p>
         <button class="btn primary" data-act="add">${icons.plus} Add books</button>
       </section>`;
   }

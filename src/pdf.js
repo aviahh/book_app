@@ -139,13 +139,15 @@ async function hashId(file) {
 }
 
 export const isEpubFile = (f) => /\.epub$/i.test(f.name) || f.type === 'application/epub+zip';
-export const isSupportedFile = (f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf' || isEpubFile(f);
+export const isComicFile = (f) => /\.(cbz|cbr)$/i.test(f.name) || /comicbook/.test(f.type || '');
+export const isSupportedFile = (f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf' || isEpubFile(f) || isComicFile(f);
 
-/** Import one book file (PDF or EPUB) into the library. Returns the stored book record. */
+/** Import one book file (PDF, EPUB, CBZ or CBR) into the library. Returns the stored book record. */
 export async function importFile(file, existingIds = new Set()) {
   const id = await hashId(file);
   if (existingIds.has(id)) return null;
   if (isEpubFile(file)) return (await import('./epub/index.js')).importEpub(file, id, takePendingProgress(id));
+  if (isComicFile(file)) return (await import('./comic/comic.js')).importComic(file, id, takePendingProgress(id));
   const data = new Uint8Array(await file.arrayBuffer());
   const doc = await openPdf(data.slice());
   try {
