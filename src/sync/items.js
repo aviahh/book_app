@@ -32,6 +32,39 @@ export async function contentId(blob) {
 
 const num = (x, dflt) => (typeof x === 'number' && isFinite(x) ? x : dflt);
 
+// EPUB pages are set for each device (screen, text size), so page numbers
+// don't travel: an EPUB position goes as the text its page starts at,
+// "e<chapter>.<offset>", and comes back as whichever page holds that text here.
+const starts = (book) => (book.epub && book.epub.starts && book.epub.starts.length ? book.epub.starts : null);
+
+export function posOf(book, n) {
+  const s = starts(book);
+  if (!s || !n) return n;
+  // A position that came from another device stays exactly as it came while
+  // it is still on this page (so it doesn't creep back and forth).
+  const kept = book.syncPos && book.syncPos[n];
+  if (kept && pageOf(book, kept) === n) return kept;
+  const i = Math.min(Math.max(1, Math.round(n)), s.length / 2) - 1;
+  return `e${s[2 * i]}.${s[2 * i + 1]}`;
+}
+
+export function pageOf(book, pos) {
+  if (typeof pos === 'number') return pos;
+  const m = /^e(\d+)\.(\d+)$/.exec(pos || '');
+  const s = starts(book);
+  if (!m || !s) return 1;
+  const ch = +m[1];
+  const o = +m[2];
+  let lo = 0;
+  let hi = s.length / 2 - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (s[2 * mid] < ch || (s[2 * mid] === ch && s[2 * mid + 1] <= o)) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo + 1;
+}
+
 /**
  * The items a local book stands for: [{ k, v, seed }]. `seed` is the time to
  * use when this device has never synced the item: the moment it really
@@ -47,15 +80,19 @@ export function bookItems(book) {
   const started = (book.lastPage || 1) > 1 || book.finished || !!book.lastOpenedAt;
   out.push({
     k: `b:${sid}:prog`,
-    v: { lastPage: book.lastPage || 1, readingPos: book.readingPos || book.lastPage || 1, finished: !!book.finished, lastOpenedAt: book.lastOpenedAt || 0 },
+    v: { lastPage: posOf(book, book.lastPage || 1), readingPos: posOf(book, book.readingPos || book.lastPage || 1), finished: !!book.finished, lastOpenedAt: book.lastOpenedAt || 0 },
     seed: started ? book.lastOpenedAt || 1 : 0,
   });
   if (book.seriesName !== undefined) out.push({ k: `b:${sid}:series`, v: { name: book.seriesName, index: book.seriesIndex == null ? null : book.seriesIndex }, seed: book.addedAt || 0 });
-  if (book.stopMark) out.push({ k: `b:${sid}:stop`, v: book.stopMark, seed: book.stopMark.at || 0 });
+  if (book.stopMark) out.push({ k: `b:${sid}:stop`, v: Object.assign({}, book.stopMark, { page: posOf(book, book.stopMark.page) }), seed: book.stopMark.at || 0 });
+  const seen = new Set();
   for (const b of book.bookmarks || []) {
     const v = { at: b.at || 0 };
     if (b.note) v.note = b.note;
-    out.push({ k: `b:${sid}:bm:${b.page}`, v, seed: b.at || 0 });
+    const k = `b:${sid}:bm:${posOf(book, b.page)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ k, v, seed: b.at || 0 });
   }
   return out;
 }
@@ -81,12 +118,22 @@ function stable(x) {
   );
 }
 
+/** Remember EPUB positions as they came (see posOf): [[page, position]]. */
+function keep(patch, pairs) {
+  const add = pairs.filter((x) => typeof x[1] === 'string');
+  if (add.length) {
+    patch.syncPos = {};
+    for (const [page, pos] of add) patch.syncPos[page] = pos;
+  }
+  return patch;
+}
+
 /** Split a key into its parts: { kind: 'book' | 'setting' | 'stats', sid, field, page, … }. */
 export function parseKey(k) {
   let m = /^b:([0-9a-f]+):(meta|prog|series|stop)$/.exec(k);
   if (m) return { kind: 'book', sid: m[1], field: m[2] };
-  m = /^b:([0-9a-f]+):bm:(\d+)$/.exec(k);
-  if (m) return { kind: 'book', sid: m[1], field: 'bm', page: +m[2] };
+  m = /^b:([0-9a-f]+):bm:(\d+|e\d+\.\d+)$/.exec(k);
+  if (m) return { kind: 'book', sid: m[1], field: 'bm', pos: /^\d+$/.test(m[2]) ? +m[2] : m[2] };
   m = /^s:(\w+)$/.exec(k);
   if (m) return { kind: 'setting', key: m[1] };
   m = /^st:([\w-]+):(\d{4}-\d\d-\d\d)$/.exec(k);
@@ -105,28 +152,38 @@ export function patchFor(book, item, items) {
     if (item.d || !item.v) return null;
     const v = item.v;
     const max = book.pageCount || Infinity;
-    const clamp = (n) => Math.max(1, Math.min(max, Math.round(num(n, 1))));
-    return { lastPage: clamp(v.lastPage), readingPos: clamp(v.readingPos || v.lastPage), finished: !!v.finished, lastOpenedAt: Math.max(book.lastOpenedAt || 0, num(v.lastOpenedAt, 0)) };
+    const clamp = (pos) => Math.max(1, Math.min(max, Math.round(num(pageOf(book, pos), 1))));
+    const out = { lastPage: clamp(v.lastPage), readingPos: clamp(v.readingPos || v.lastPage), finished: !!v.finished, lastOpenedAt: Math.max(book.lastOpenedAt || 0, num(v.lastOpenedAt, 0)) };
+    return keep(out, [[out.lastPage, v.lastPage], [out.readingPos, v.readingPos || v.lastPage]]);
   }
   if (p.field === 'series') {
     if (item.d || !item.v) return { seriesName: undefined, seriesIndex: undefined };
     return { seriesName: typeof item.v.name === 'string' ? item.v.name : undefined, seriesIndex: item.v.index == null ? undefined : num(item.v.index, undefined) };
   }
-  if (p.field === 'stop') return { stopMark: item.d ? null : item.v };
+  if (p.field === 'stop') {
+    if (item.d || !item.v) return { stopMark: null };
+    const page = pageOf(book, item.v.page);
+    return keep({ stopMark: Object.assign({}, item.v, { page }) }, [[page, item.v.page]]);
+  }
   if (p.field === 'bm') {
     const prefix = `b:${book.syncId}:bm:`;
     // Bookmarks sync doesn't know about yet stay; the rest follow the items.
-    const list = (book.bookmarks || []).filter((b) => !items.has(prefix + b.page));
+    const list = (book.bookmarks || []).filter((b) => !items.has(prefix + posOf(book, b.page)));
+    const taken = new Set(list.map((b) => b.page));
+    const kept = [];
     for (const it of items.values()) {
       if (it.d || it.k.indexOf(prefix) !== 0) continue;
-      const page = +it.k.slice(prefix.length);
-      if (!(page >= 1)) continue;
+      const pos = it.k.slice(prefix.length);
+      const page = pageOf(book, /^\d+$/.test(pos) ? +pos : pos);
+      if (!(page >= 1) || taken.has(page)) continue;
+      taken.add(page);
+      kept.push([page, /^\d+$/.test(pos) ? +pos : pos]);
       const b = { page, at: (it.v && it.v.at) || 0 };
       if (it.v && it.v.note) b.note = it.v.note;
       list.push(b);
     }
     list.sort((a, b) => a.page - b.page);
-    return { bookmarks: list };
+    return keep({ bookmarks: list }, kept);
   }
   return null;
 }

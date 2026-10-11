@@ -222,7 +222,24 @@ function writeOthers() {
 
 async function applyToBook(book, list) {
   let patch = {};
-  for (const it of list) Object.assign(patch, patchFor(book, it, items) || {});
+  let pos = null;
+  for (const it of list) {
+    const p = patchFor(book, it, items);
+    if (!p) continue;
+    if (p.syncPos) pos = Object.assign(pos || {}, p.syncPos);
+    delete p.syncPos;
+    Object.assign(patch, p);
+  }
+  if (pos) {
+    // Kept for the pages that still have a place, bookmark or mark on them.
+    const all = Object.assign({}, book.syncPos, pos);
+    const used = new Set([patch.lastPage || book.lastPage, patch.readingPos || book.readingPos]);
+    for (const b of patch.bookmarks || book.bookmarks || []) used.add(b.page);
+    const stop = 'stopMark' in patch ? patch.stopMark : book.stopMark;
+    if (stop) used.add(stop.page);
+    patch.syncPos = {};
+    for (const n of Object.keys(all)) if (used.has(+n)) patch.syncPos[n] = all[n];
+  }
   if (!Object.keys(patch).length) return;
   applying++;
   try {
