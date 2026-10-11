@@ -1900,7 +1900,12 @@ html.reading body {
 .pos-ribbon.stuck i {
   height: 28px;
 }
+.pos-ribbon.zoomed i {
+  opacity: 0.5;
+  transition: opacity 0.25s ease, height 0.2s ease;
+}
 .pos-ribbon.pressed i {
+  opacity: 1;
   height: 44px;
   transition: height 0.45s ease;
 }

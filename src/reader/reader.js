@@ -30,7 +30,6 @@ export const READING_KEY = 'folio.reading.v1';
 const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
 const same = (p, q) => p.index === q.index && p.offset === q.offset;
 const LONG_PRESS_MS = 450; // press and hold a word: translate it
-const RETURN_SHOW_MS = 6000; // "Back to page N" stays this long after a jump / after Search closes
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
 const STRIP_GAP = 14;
@@ -136,7 +135,7 @@ class Reader {
         this.tools.decorateAll();
       },
       searchClosed: () => {
-        this.returnShowUntil = Date.now() + RETURN_SHOW_MS;
+        this.returnShowUntil = Date.now() + this.#returnMs();
         this.#syncReturn();
       },
       dock: (px) => {
@@ -271,7 +270,7 @@ class Reader {
 
   /** A jump elsewhere in the book (search, contents, bookmarks…): remember the way back. */
   async #jumpTo(n, opts) {
-    this.returnShowUntil = Date.now() + RETURN_SHOW_MS;
+    this.returnShowUntil = Date.now() + this.#returnMs();
     // The zoom itself (not the on-screen page size): the way back is usually taken
     // after the Search panel has closed and the book has its full width again.
     if (!this.returnTo) this.returnTo = { page: this.readingPos, view: { ...this.#viewAnchor(), w: 0 }, moves: 0 };
@@ -321,6 +320,11 @@ class Reader {
     if (show && !searching) this.returnTimer = setTimeout(() => this.#syncReturn(), left + 30);
   }
 
+  /** How long "Back to page N" stays (Settings). */
+  #returnMs() {
+    return (this.settings.returnSeconds || 7) * 1000;
+  }
+
   // ---- the gold ribbon (reading position), over the page you're reading
 
   /** The page being read: in a zoomed spread, the one filling most of the screen. */
@@ -363,6 +367,7 @@ class Reader {
     if (cr && cr.width && y < cr.bottom - box.top && x + 34 > cr.left - box.left) x = cr.left - box.left - 44;
     rib.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
     rib.classList.toggle('stuck', y === 0 && r.top < box.top);
+    rib.classList.toggle('zoomed', this.camera.zoomed); // see-through over a zoomed page
     if (rib.hidden || this.ribbonPage !== this.readingPos) {
       // Arriving on a new page: slide in.
       rib.classList.remove('arrive');

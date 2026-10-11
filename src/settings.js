@@ -20,6 +20,7 @@ export const DEFAULTS = {
   popupSeconds: 2.5, // translation bubble closes by itself after this long; 0 = never
   translateTo: 'iw',
   speechLang: 'auto',
+  returnSeconds: 7, // "Back to page N" stays this long after a jump / after Search closes
   fab: true, // the floating tools bubble in the reader
   fabTools: ['search', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'], // its favorites, in order
   readContinuous: false, // read aloud: false = drag across a passage to read it; true = tap where to start, and it reads on

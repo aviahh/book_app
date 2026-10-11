@@ -528,14 +528,37 @@ export class ReaderTools {
       if (!this.fabMenu.hidden && !this.fabMenu.contains(e.target) && !this.fab.contains(e.target)) this.closeFabMenu();
     };
     document.addEventListener('pointerdown', this.outside, true);
+    // A panel closes with a plain tap on the page: one finger, still, quick,
+    // and not the first half of a double tap. Pinching, dragging, double-tap
+    // zoom, turning pages and the reader's own controls leave it open.
+    const CONTROLS = '.chrome, .edge-arrow, .tts-bar, .pos-ribbon, .zoom-chip, .place-hint, .return-pill, .word-pop, .toast';
     this.outsidePanel = (e) => {
-      if (this.panel.hidden || this.panelKind === 'note' || this.panelKind === 'editor') return;
+      const tap = this.outsideTap;
+      if (tap) {
+        tap.multi = true; // a second finger (pinch), or a second tap (double tap)
+        clearTimeout(tap.timer);
+      }
+      if (this.panel.hidden || this.panelKind === 'note' || this.panelKind === 'editor') return (this.outsideTap = null);
       const t = e.target;
-      if (this.panel.contains(t) || this.fab.contains(t) || this.fabMenu.contains(t) || this.findBar.contains(t)) return;
-      if (t.closest && t.closest('.return-pill')) return;
-      this.closePanel();
+      if (this.panel.contains(t) || this.fab.contains(t) || this.fabMenu.contains(t) || this.findBar.contains(t) || (t.closest && t.closest(CONTROLS))) return (this.outsideTap = null);
+      if (tap && performance.now() - tap.t < 400) return; // second tap of a double tap: zooming
+      this.outsideTap = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), multi: false };
+    };
+    this.outsideUp = (e) => {
+      const tap = this.outsideTap;
+      if (!tap || tap.done || e.pointerId !== tap.id) return;
+      tap.done = true;
+      if (tap.multi || performance.now() - tap.t > 400 || Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > 10) return (this.outsideTap = null);
+      // Wait out a possible second tap before closing.
+      tap.timer = setTimeout(() => {
+        if (this.outsideTap === tap && !tap.multi) {
+          this.outsideTap = null;
+          this.closePanel();
+        }
+      }, 320);
     };
     document.addEventListener('pointerdown', this.outsidePanel, true);
+    document.addEventListener('pointerup', this.outsideUp, true);
   }
 
   /** Show or hide the bubble (Settings). */
@@ -717,5 +740,6 @@ export class ReaderTools {
   destroy() {
     document.removeEventListener('pointerdown', this.outside, true);
     document.removeEventListener('pointerdown', this.outsidePanel, true);
+    document.removeEventListener('pointerup', this.outsideUp, true);
   }
 }

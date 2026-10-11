@@ -11,7 +11,7 @@ export async function mountSettings(view, _p, nav) {
       ${options.map(([v, l]) => `<button role="radio" data-key="${key}" data-val="${v}" aria-checked="${getSettings()[key] === v}">${l}</button>`).join('')}
     </div>`;
   const toggle = (key) => `<button class="switch" role="switch" data-toggle="${key}" aria-checked="${getSettings()[key]}"><i></i></button>`;
-  const UNITS = { autoHideSeconds: ' s', popupSeconds: ' s' };
+  const UNITS = { autoHideSeconds: ' s', popupSeconds: ' s', returnSeconds: ' s' };
   const shown = (key, v) => (key === 'popupSeconds' && v === 0 ? 'Never' : `${v}${UNITS[key] || ''}`);
   const stepper = (key, min, max, step = 1) => `
     <div class="stepper" data-stepper="${key}" data-min="${min}" data-max="${max}" data-step="${step}">
@@ -87,6 +87,7 @@ export async function mountSettings(view, _p, nav) {
       <h2>Reading view</h2>
       <div class="set-group">
         ${row('Full screen while reading', 'Hides the browser bars and other apps when a book opens.', toggle('fullscreen'))}
+        ${row('“Back to page” button stays', 'After jumping elsewhere (search, contents, bookmarks…) a button takes you back to where you were reading. It shows while Search is open and for this long after.', stepper('returnSeconds', 3, 20, 1))}
         ${row('Floating tools bubble', 'A small see-through button on the page: tap it for search, bookmarks, contents and your other favorite tools. Drag it anywhere; press and hold it to choose and order the tools.', toggle('fab'))}
         ${row('One page when zoomed in', 'Landscape: zoom in on a page and it becomes a single page you scroll down, like portrait, so you can zoom much further. Zoom back out past the width of the screen to get the two-page view back.', toggle('focusZoom'))}
         ${row('Toolbar position', '', seg('toolbarPosition', [['top', 'Top'], ['bottom', 'Bottom']]))}
