@@ -1872,7 +1872,7 @@ html.reading body {
   top: 0;
   z-index: 22;
   width: 34px; /* a comfortable touch target around the slim ribbon */
-  height: 52px;
+  height: 56px;
   padding: 0;
   background: none;
   touch-action: none;
@@ -1881,33 +1881,105 @@ html.reading body {
 .pos-ribbon[hidden] {
   display: none;
 }
-.pos-ribbon i {
+.pos-ribbon svg {
   position: absolute;
   top: 0;
-  left: 9px;
-  width: 16px;
-  height: 34px;
-  background: linear-gradient(#e8c089, #c0904f);
-  -webkit-clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
+  left: 8px;
+  width: 18px;
+  height: 38px;
+  overflow: visible;
   transform-origin: top;
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3));
-  transition: height 0.2s ease, transform 0.2s ease;
+  transition: transform 0.2s ease, opacity 0.25s ease;
 }
-.pos-ribbon.arrive i {
+.pos-ribbon path {
+  fill: url(#ribGold);
+  stroke: #b8864a;
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+  transition: fill-opacity 0.6s ease;
+}
+.pos-ribbon.arrive svg {
   animation: ribbon-in 0.5s 0.1s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
-.pos-ribbon.stuck i {
-  height: 28px;
+.pos-ribbon.stuck svg {
+  transform: scaleY(0.82);
 }
-.pos-ribbon.zoomed i {
+.pos-ribbon.zoomed svg {
   opacity: 0.5;
-  transition: opacity 0.25s ease, height 0.2s ease;
 }
-.pos-ribbon.pressed i {
+.pos-ribbon.pressed svg {
   opacity: 1;
-  height: 44px;
-  transition: height 0.45s ease;
+  transform: scaleY(1.25);
+  transition: transform 0.45s ease;
+}
+/* Away: hollow, with the page it stands for */
+.pos-ribbon.ghost path {
+  fill-opacity: 0.18;
+  stroke: #c79554;
+  stroke-width: 2;
+  stroke-dasharray: 3 2.2;
+}
+.pos-ribbon.ghost svg {
+  opacity: 0.9;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+}
+.rib-p {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(22, 20, 17, 0.78);
+  color: #e8c089;
+  font-size: 0.66rem;
+  font-weight: 650;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.rib-p:empty {
+  display: none;
+}
+/* The hollow ribbon filling in: your reading position moved here */
+.pos-ribbon.filling path {
+  animation: rib-fill 0.8s ease;
+}
+@keyframes rib-fill {
+  from {
+    fill-opacity: 0.18;
+  }
+}
+.rib-menu {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border-radius: 16px;
+  background: rgba(22, 20, 17, 0.92);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(210, 162, 108, 0.35);
+  animation: fab-menu-in 0.18s ease;
+}
+.rib-menu[hidden] {
+  display: none;
+}
+.rib-menu button {
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 10px;
+  color: #efe8dc;
+  font-size: 0.92rem;
+  font-weight: 560;
+  text-align: left;
+  white-space: nowrap;
+}
+.rib-menu button:active {
+  background: rgba(255, 255, 255, 0.08);
 }
 .page.bookmarked::after {
   animation: ribbon-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;

@@ -340,7 +340,7 @@ export class ReaderTools {
     const snip = (n) => esc(this.texts[n] ? this.texts[n].slice(0, 110) : '…');
     body.innerHTML = `
       <ol class="tp-results marks">
-        <li class="mk pos" data-go="pos"><span class="mk-ico">${icons.bookmark}</span><span class="mk-text"><b>Reading position</b><span class="mk-sub">Page ${pos} · follows you as you read</span></span></li>
+        <li class="mk pos" data-go="pos"><span class="mk-ico">${icons.bookmark}</span><span class="mk-text"><b>Reading position</b><span class="mk-sub">Page ${pos} · ${this.api.isAway() ? 'you’re elsewhere — tap to go back' : 'follows you as you read'}</span></span></li>
         <li class="mk stop" data-go="${stop ? 'stop' : 'place'}"><span class="mk-ico">${icons.flag}</span><span class="mk-text"><b>Where I stopped</b><span class="mk-sub" dir="auto">${
           stop ? `Page ${stop.page}${stop.line ? ` · “${esc(stop.line.slice(0, 70))}${stop.line.length > 70 ? '…' : ''}”` : ' · spot only, no line recorded'}` : 'Not marked yet — tap to mark a line'
         }</span></span>${stop ? `<button class="tp-del mk-edit" data-mk="restop" aria-label="Mark a new spot">${icons.edit}</button><button class="tp-del" data-mk="unstop" aria-label="Remove where I stopped">${icons.close}</button>` : ''}</li>

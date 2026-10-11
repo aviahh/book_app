@@ -30,6 +30,7 @@ export const READING_KEY = 'folio.reading.v1';
 const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
 const same = (p, q) => p.index === q.index && p.offset === q.offset;
 const LONG_PRESS_MS = 450; // press and hold a word: translate it
+const READ_ON_TURNS = 2; // after a jump, this many page turns forward make that place your reading position
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
 const STRIP_GAP = 14;
@@ -127,6 +128,7 @@ class Reader {
       goToPage: (n, opts) => this.#jumpTo(n, opts),
       readingPos: () => this.readingPos,
       stopMark: () => this.book.stopMark || null,
+      isAway: () => this.#away(),
       placeStopMark: () => this.#startPlacing(),
       goToStop: () => this.#goToStop(),
       clearStopMark: async () => {
@@ -229,7 +231,8 @@ class Reader {
       </div>
       <div class="word-pop" hidden role="dialog" aria-label="Translation"></div>
       <div class="toast" hidden></div>
-      <button class="pos-ribbon" hidden aria-label="Reading position. Press and hold to mark where you stopped"><i></i></button>
+      <button class="pos-ribbon" hidden aria-label="Reading position"><svg viewBox="0 0 18 38" aria-hidden="true"><defs><linearGradient id="ribGold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e8c089"/><stop offset="1" stop-color="#c0904f"/></linearGradient></defs><path d="M1.5 0.8h15v35.5l-7.5-7-7.5 7z"/></svg><span class="rib-p"></span></button>
+      <div class="rib-menu" hidden role="menu"><button data-act="ribHere" role="menuitem">Read from here</button><button data-act="ribStop" role="menuitem">Mark where I stopped</button></div>
       <div class="return-pill" hidden><button data-act="returnBack" class="rp-go">${icons.back}<span></span></button><button data-act="returnDismiss" class="rp-x" aria-label="Stay here">${icons.close}</button></div>
       <div class="place-hint" hidden><span>Tap the line where you stopped</span><button data-act="placeCancel">Cancel</button></div>
     `;
@@ -282,6 +285,11 @@ class Reader {
     }
     // Landed back where you were reading: nothing to return to.
     if (this.returnTo && visiblePages(spreadPages(this.mode, this.spread, this.total)).includes(this.returnTo.page)) this.returnTo = null;
+    // Counting page turns from here on (a new jump starts the count again).
+    if (this.returnTo) {
+      this.returnTo.last = this.#currentPage();
+      this.returnTo.forward = 0;
+    }
     this.#syncReturn();
     this.#syncRibbon();
   }
@@ -346,10 +354,23 @@ class Reader {
   }
 
   /** Put the ribbon at the top of its page, or at the top of the screen when zoomed past it. */
+  /** Away from the reading position after a jump (until you go back or read on). */
+  #away() {
+    const r = this.returnTo;
+    return !!r && !visiblePages(spreadPages(this.mode, this.spread, this.total)).includes(r.page);
+  }
+
+  /**
+   * The ribbon: solid gold on the page you're reading. Away after a jump, a
+   * hollow one on the page you're looking at says where your reading
+   * position is ("p. 74"): tap it to go back, hold it to read from here.
+   */
   #syncRibbon() {
     const rib = this.ribbon || (this.ribbon = this.el.querySelector('.pos-ribbon'));
     const root = this.mode === 'single' ? this.stripEl : this.bookEl;
-    const p = !this.busy && root && root.querySelector(`.slot .page[data-page="${this.readingPos}"]`);
+    const away = this.#away();
+    const on = away ? this.#primaryPage() : this.readingPos;
+    const p = !this.busy && root && root.querySelector(`.slot .page[data-page="${on}"]`);
     const box = this.el.getBoundingClientRect();
     const r = p && p.getBoundingClientRect();
     // Near the page's top right corner; zoomed past that corner, kept just inside the screen.
@@ -358,8 +379,12 @@ class Reader {
     if (!visible) {
       rib.hidden = true;
       this.ribbonPage = null;
+      this.#closeRibMenu();
       return;
     }
+    rib.classList.toggle('ghost', away);
+    rib.querySelector('.rib-p').textContent = away ? `p. ${this.readingPos}` : '';
+    rib.setAttribute('aria-label', away ? `Your reading position is page ${this.readingPos}. Tap to go back; hold to read from here.` : 'Reading position. Hold to mark where you stopped.');
     const y = Math.max(0, r.top - box.top);
     // At the top of the screen, stay clear of the zoom chip there.
     const chip = this.el.querySelector('.zoom-chip');
@@ -368,14 +393,51 @@ class Reader {
     rib.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
     rib.classList.toggle('stuck', y === 0 && r.top < box.top);
     rib.classList.toggle('zoomed', this.camera.zoomed); // see-through over a zoomed page
-    if (rib.hidden || this.ribbonPage !== this.readingPos) {
+    const key = `${on}${away ? 'g' : ''}`;
+    if (rib.hidden || this.ribbonPage !== key) {
       // Arriving on a new page: slide in.
       rib.classList.remove('arrive');
       void rib.offsetWidth;
       rib.classList.add('arrive');
     }
     rib.hidden = false;
-    this.ribbonPage = this.readingPos;
+    this.ribbonPage = key;
+    if (this.ribMenu && !this.ribMenu.hidden) this.#placeRibMenu();
+  }
+
+  /** Make the page being read now the reading position (the hollow ribbon fills in). */
+  #readFromHere(auto = false) {
+    const n = this.#primaryPage();
+    this.returnTo = null;
+    this.#closeRibMenu();
+    this.#setReadingPos(n);
+    this.#syncReturn();
+    this.#syncRibbon();
+    const rib = this.ribbon;
+    rib.classList.remove('filling');
+    void rib.offsetWidth;
+    rib.classList.add('filling');
+    clearTimeout(this.fillTimer);
+    this.fillTimer = setTimeout(() => rib.classList.remove('filling'), 900);
+    this.#toast(`Reading position moved to page ${n}`);
+  }
+
+  #openRibMenu() {
+    this.ribMenu.hidden = false;
+    this.#placeRibMenu();
+  }
+
+  #closeRibMenu() {
+    if (this.ribMenu) this.ribMenu.hidden = true;
+  }
+
+  #placeRibMenu() {
+    const m = this.ribMenu;
+    const box = this.el.getBoundingClientRect();
+    const r = this.ribbon.getBoundingClientRect();
+    const w = m.offsetWidth;
+    const x = Math.max(8, Math.min(box.width - w - 8, r.left + r.width / 2 - box.left - w + 24));
+    m.style.transform = `translate(${Math.round(x)}px, ${Math.round(r.bottom - box.top + 8)}px)`;
   }
 
   #bindRibbon() {
@@ -389,7 +451,8 @@ class Reader {
         timer = null;
         rib.classList.remove('pressed');
         if (navigator.vibrate) navigator.vibrate(12);
-        this.#startPlacing();
+        if (rib.classList.contains('ghost')) this.#openRibMenu();
+        else this.#startPlacing();
       }, LONG_PRESS_MS);
     });
     const end = (e) => {
@@ -397,13 +460,23 @@ class Reader {
       if (timer) {
         clearTimeout(timer);
         timer = null;
-        if (e.type === 'pointerup') this.#toast(`Reading position · page ${this.readingPos} — hold to mark the line where you stopped`);
+        if (e.type !== 'pointerup') return;
+        if (rib.classList.contains('ghost')) this.#goBack();
+        else this.#toast(`Reading position · page ${this.readingPos} — hold to mark the line where you stopped`);
       }
     };
     rib.addEventListener('pointerup', end);
     rib.addEventListener('pointercancel', end);
     rib.addEventListener('pointerleave', end);
     rib.addEventListener('click', (e) => e.stopPropagation());
+    this.ribMenu = this.el.querySelector('.rib-menu');
+    this.ribMenu.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // Anywhere else closes the little menu.
+    const outside = (e) => {
+      if (!this.ribMenu.hidden && !this.ribMenu.contains(e.target) && !rib.contains(e.target)) this.#closeRibMenu();
+    };
+    document.addEventListener('pointerdown', outside, true);
+    this.cleanups.push(() => document.removeEventListener('pointerdown', outside, true));
   }
 
   #startPlacing() {
@@ -1128,8 +1201,15 @@ class Reader {
       const r = this.returnTo;
       if (r) {
         const shown = visiblePages(spreadPages(this.mode, this.spread, this.total));
-        // Back where you were, or you've read on from here: the way back is no longer needed.
-        if (shown.includes(r.page) || ++r.moves >= 3) this.returnTo = null;
+        const p = this.#currentPage();
+        if (shown.includes(r.page)) this.returnTo = null; // back where you were, by hand
+        else {
+          // Reading on from where you landed: two page turns forward move the reading position here.
+          if (r.last != null && p > r.last) r.forward = (r.forward || 0) + 1;
+          else if (r.last != null && p < r.last) r.forward = 0;
+          r.last = p;
+          if (r.forward >= READ_ON_TURNS) this.#readFromHere(true);
+        }
       }
       if (!this.returnTo) this.#setReadingPos(this.#primaryPage());
       this.#syncReturn();
@@ -1578,9 +1658,12 @@ class Reader {
       case 'returnBack':
         return this.#goBack();
       case 'returnDismiss':
-        this.returnTo = null;
-        this.#setReadingPos(this.#currentPage());
-        return this.#syncReturn();
+        return this.#readFromHere();
+      case 'ribHere':
+        return this.#readFromHere();
+      case 'ribStop':
+        this.#closeRibMenu();
+        return this.#startPlacing();
       case 'placeCancel':
         return this.#stopPlacing();
       case 'ttsMode':
