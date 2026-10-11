@@ -87,6 +87,7 @@ export async function mountSettings(view, _p, nav) {
       <h2>Reading view</h2>
       <div class="set-group">
         ${row('Full screen while reading', 'Hides the browser bars and other apps when a book opens.', toggle('fullscreen'))}
+        ${row('Floating tools bubble', 'A small see-through button on the page: tap it for search, bookmarks, contents and your other favorite tools. Drag it anywhere; press and hold it to choose and order the tools.', toggle('fab'))}
         ${row('One page when zoomed in', 'Landscape: zoom in on a page and it becomes a single page you scroll down, like portrait, so you can zoom much further. Zoom back out past the width of the screen to get the two-page view back.', toggle('focusZoom'))}
         ${row('Toolbar position', '', seg('toolbarPosition', [['top', 'Top'], ['bottom', 'Bottom']]))}
         ${row('Hide toolbar and arrows after', 'They fade away after this many seconds; tap to bring them back.', stepper('autoHideSeconds', 2, 10, 0.5), { sub: true })}

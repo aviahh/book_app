@@ -19,6 +19,7 @@ import { spreadCount, spreadOf, spreadPages, visiblePages, spreadLabel } from '.
 import { collectSpans, hitTest, wordAt, selectableAt, rangeRects, rangeText, pageText, sentenceRanges } from './textTools.js';
 import { OrientationLock } from './orientation.js';
 import { ThumbStrip } from './thumbs.js';
+import { ReaderTools } from './tools.js';
 
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 340;
@@ -114,7 +115,23 @@ class Reader {
     });
     this.thumbs.cache.setTone(this.settings.pageTone);
     this.#bindInput();
-    this.#loadChapters();
+    this.chaptersReady = this.#loadChapters();
+    this.tools = new ReaderTools({
+      el: this.el,
+      doc,
+      book,
+      total: this.total,
+      currentPage: () => this.#currentPage(),
+      goToPage: (n, opts) => this.#goToPage(n, opts),
+      outline: () => this.chaptersReady.then(() => this.outlineItems || []),
+      toast: (m) => this.#toast(m),
+      isReading: () => !!this.readMode,
+      toolbar: (act) => {
+        const btn = this.el.querySelector(`[data-act="${act}"]`);
+        if (act === 'goto' || act === 'thumbs') this.#showChrome();
+        this.#action(act, btn);
+      },
+    });
     // Keep the page itself still while reading (iOS likes to scroll/zoom it).
     document.documentElement.classList.add('reading');
     window.scrollTo(0, 0);
@@ -205,6 +222,39 @@ class Reader {
     if (toneChanged) this.#retone();
     this.el.classList.toggle('toolbar-top', s.toolbarPosition === 'top');
     if (this.focus && s.focusZoom === false) this.#layout();
+    if (this.tools) this.tools.sync();
+  }
+
+  /** Go to page n (from search, bookmarks, contents); with `find`, mark that match on it. */
+  async #goToPage(n, { find, nth = 0 } = {}) {
+    await this.go(spreadOf(this.mode, n));
+    if (!find) return;
+    const token = (this.findToken = (this.findToken || 0) + 1);
+    let shown = null;
+    for (let t = 0; t < 30 && token === this.findToken && !(shown = this.#shownPageText(n)); t++) await new Promise((r) => setTimeout(r, 100));
+    if (!shown || token !== this.findToken) return;
+    const hay = shown.text.toLowerCase();
+    const needle = find.toLowerCase();
+    const hits = [];
+    for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + needle.length)) hits.push(at);
+    if (!hits.length) return;
+    const at = hits[Math.min(nth, hits.length - 1)];
+    let a = at;
+    let b = at + needle.length - 1;
+    while (a < b && !shown.map[a]) a++;
+    while (b > a && !shown.map[b]) b--;
+    if (!shown.map[a] || !shown.map[b]) return;
+    const rects = rangeRects(shown.spans, shown.map[a], { index: shown.map[b].index, offset: shown.map[b].offset + 1 });
+    if (!rects.length) return;
+    this.#drawHighlights(rects, 'find');
+    if (this.mode === 'single') {
+      const top = Math.min(...rects.map((x) => x.top));
+      const box = this.el.getBoundingClientRect();
+      if (top < box.top + this.H * 0.12 || top > box.top + this.H * 0.75) {
+        const cam = this.camera;
+        cam.animateTo(cam.s, cam.tx, cam.ty + (box.top + this.H * 0.35 - top), 400);
+      }
+    }
   }
 
   // ------------------------------------------------------------------ layout
@@ -218,19 +268,26 @@ class Reader {
     try {
       const outline = await this.doc.getOutline();
       const starts = new Set();
-      const walk = async (items) => {
+      const titled = [];
+      const walk = async (items, depth) => {
         for (const it of items || []) {
+          let page = null;
           try {
             let dest = it.dest;
             if (typeof dest === 'string') dest = await this.doc.getDestination(dest);
             const ref = dest && dest[0];
             const index = typeof ref === 'number' ? ref : ref ? await this.doc.getPageIndex(ref) : -1;
-            if (index >= 0) starts.add(index + 1);
+            if (index >= 0) {
+              page = index + 1;
+              starts.add(page);
+            }
           } catch (e) {}
-          await walk(it.items);
+          if (it.title) titled.push({ title: it.title.trim(), page, depth });
+          await walk(it.items, depth + 1);
         }
       };
-      await walk(outline);
+      await walk(outline, 0);
+      this.outlineItems = titled;
       const list = [...starts].filter((p) => p >= 1 && p <= this.total).sort((a, b) => a - b);
       this.chapters = list.length >= 2 ? list : null;
     } catch (e) {
@@ -331,6 +388,7 @@ class Reader {
     // Same layout as before (only the size changed): same zoom, same spot.
     if (keep && keep.mode === mode) this.#restoreView(keep);
     this.pendingView = null;
+    if (this.tools) this.tools.layout();
   }
 
   /**
@@ -430,6 +488,7 @@ class Reader {
     const canvas = document.createElement('canvas');
     p.append(canvas);
     p.painted = this.cache.paint(n, canvas, prio).catch(() => {});
+    if (this.tools) this.tools.decoratePage(p, n);
     if (text) {
       const tl = document.createElement('div');
       tl.className = 'textLayer';
@@ -2370,6 +2429,7 @@ class Reader {
     if (!location.hash.startsWith('#/settings')) exitFullscreen();
     this.speech.stop(true);
     this.#keepAwake(false);
+    this.tools.destroy();
     this.lock.destroy();
     this.thumbs.destroy();
     for (const fn of this.cleanups) fn();
