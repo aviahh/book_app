@@ -71,9 +71,10 @@ function exitFullscreen() {
 export async function mountReader(root, { id }, nav) {
   // Ask for full screen right away, while the tap that opened the book still counts as a gesture.
   if (getSettings().fullscreen) enterFullscreen();
-  const book = await getBook(id);
+  let book = await getBook(id);
   if (!book) return nav('#/library');
   const blob = await getBookFile(id);
+  if (book.format === 'epub') return mountEpub(root, book, blob, nav);
   const doc = await openPdf(new Uint8Array(await blob.arrayBuffer()));
   // Size the pages from an inside page: the cover is often a slightly
   // different shape, and every page is drawn into the same box.
@@ -85,9 +86,62 @@ export async function mountReader(root, { id }, nav) {
   return () => reader.destroy();
 }
 
+const EPUB_KEYS = ['epubFont', 'epubSize', 'epubSpacing'];
+
+/**
+ * EPUB books are typeset into pages for this screen and the text settings.
+ * Changing those sets the pages again and reopens the book at the same text.
+ */
+async function mountEpub(root, book, blob, nav) {
+  const { openEpubBook } = await import('../epub/index.js');
+  let reader = null;
+  let gone = false;
+  let busy = null;
+  const veil = document.createElement('div');
+  veil.className = 'typeset-veil';
+  veil.innerHTML = '<div class="tv-card"><div class="spinner"></div><p>Setting the pages…</p></div>';
+  const open = async (reopen) => {
+    const showSoon = setTimeout(() => root.append(veil), reopen ? 0 : 250);
+    const label = veil.querySelector('p');
+    try {
+      const { doc } = await openEpubBook(book, blob, (f) => (label.textContent = f < 1 && f > 0 ? `Setting the pages… ${Math.round(f * 100)}%` : 'Setting the pages…'), (patch) => updateBook(book.id, patch));
+      if (gone) return doc.destroy();
+      book.pageAspect = doc.layout.W / doc.layout.H;
+      reader = new Reader(root, book, doc, nav, { reopen });
+    } finally {
+      clearTimeout(showSoon);
+      veil.remove();
+    }
+  };
+  await open();
+  let timer = 0;
+  const off = onSettingsChange((s, key) => {
+    if (!EPUB_KEYS.includes(key) || gone) return;
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (busy) await busy;
+      if (gone || !reader) return;
+      const keep = reader.handOver();
+      reader.destroy({ staying: true });
+      reader = null;
+      book = Object.assign((await getBook(book.id)) || book, keep.saved);
+      busy = open(keep.panel).catch((e) => console.error(e));
+      await busy;
+      busy = null;
+    }, 450);
+  });
+  return () => {
+    gone = true;
+    off();
+    clearTimeout(timer);
+    if (reader) reader.destroy();
+  };
+}
+
 class Reader {
-  constructor(root, book, doc, nav) {
+  constructor(root, book, doc, nav, { reopen } = {}) {
     this.root = root;
+    this.reflowable = !!doc.reflowable;
     this.book = book;
     this.doc = doc;
     this.nav = nav;
@@ -148,12 +202,14 @@ class Reader {
       outline: () => this.chaptersReady.then(() => this.outlineItems || []),
       toast: (m) => this.#toast(m),
       isReading: () => !!this.readMode,
+      reflowable: this.reflowable,
       toolbar: (act) => {
         const btn = this.el.querySelector(`[data-act="${act}"]`);
         if (act === 'goto' || act === 'thumbs') this.#showChrome();
         this.#action(act, btn);
       },
     });
+    if (reopen === 'text') this.tools.openText();
     // Keep the page itself still while reading (iOS likes to scroll/zoom it).
     document.documentElement.classList.add('reading');
     window.scrollTo(0, 0);
@@ -957,7 +1013,7 @@ class Reader {
   #followLink(el) {
     el.classList.add('hit');
     setTimeout(() => el.classList.remove('hit'), 450);
-    this.go(spreadOf(this.mode, +el.dataset.page));
+    this.#jumpTo(+el.dataset.page); // a jump: "Back to page" takes you back (e.g. from a note)
   }
 
   #slot(cls, n, opts) {
@@ -2832,7 +2888,13 @@ class Reader {
 
   // ------------------------------------------------------------------ teardown
 
-  destroy() {
+  /** Before the pages are set again: where we are, and which tool panel is open. */
+  handOver() {
+    const page = this.#currentPage();
+    return { saved: { lastPage: page, readingPos: this.returnTo ? this.readingPos : page }, panel: this.tools.panelKind || null };
+  }
+
+  destroy({ staying = false } = {}) {
     clearTimeout(this.hideTimer);
     clearTimeout(this.arrowTimer);
     clearTimeout(this.tapTimer);
@@ -2844,7 +2906,7 @@ class Reader {
       localStorage.removeItem(READING_KEY);
     } catch (err) {}
     // Leaving for Settings keeps full screen; leaving the book ends it.
-    if (!location.hash.startsWith('#/settings')) exitFullscreen();
+    if (!staying && !location.hash.startsWith('#/settings')) exitFullscreen();
     this.speech.stop(true);
     this.#keepAwake(false);
     this.tools.destroy();

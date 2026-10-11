@@ -22,9 +22,13 @@ export const DEFAULTS = {
   speechLang: 'auto',
   returnSeconds: 7, // "Back to page N" stays this long after a jump / after Search closes
   fab: true, // the floating tools bubble in the reader
-  fabTools: ['search', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'], // its favorites, in order
+  fabTools: ['search', 'text', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'], // its favorites, in order
   readContinuous: false, // read aloud: false = drag across a passage to read it; true = tap where to start, and it reads on
   speechVoice: 'microsoft', // 'microsoft' (natural voices, as in EZ_shortcut) | 'google'
+  // EPUB (flowing text) books
+  epubFont: 'literata', // 'literata' | 'sans' | 'georgia'
+  epubSize: 100, // text size, % of this device's normal
+  epubSpacing: 'normal', // line spacing: 'compact' | 'normal' | 'relaxed'
 };
 
 let current = load();
@@ -32,7 +36,13 @@ const listeners = new Set();
 
 function load() {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') };
+    const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
+    // EPUB support added "Text size" to the tools bubble: put it among saved favorites once.
+    if (Array.isArray(saved.fabTools) && !saved.fabText) {
+      if (!saved.fabTools.includes('text')) saved.fabTools.splice(saved.fabTools[0] === 'search' ? 1 : 0, 0, 'text');
+      saved.fabText = true;
+    }
+    return { ...DEFAULTS, ...saved };
   } catch {
     return { ...DEFAULTS };
   }

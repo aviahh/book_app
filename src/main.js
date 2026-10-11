@@ -1,5 +1,7 @@
 import './polyfills.js'; // first: older browsers (iOS 12) need these before anything runs
 import '@fontsource-variable/inter';
+import '@fontsource-variable/literata/wght.css'; // EPUB text
+import '@fontsource-variable/literata/wght-italic.css';
 import '@fontsource/cormorant-garamond/500.css';
 import '@fontsource/cormorant-garamond/600.css';
 import '@fontsource/cormorant-garamond/500-italic.css';

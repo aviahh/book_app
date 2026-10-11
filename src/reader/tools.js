@@ -8,9 +8,11 @@
 import { icons } from '../icons.js';
 import { updateBook } from '../db.js';
 import { getSettings, setSetting } from '../settings.js';
+import { FONTS } from '../epub/fonts.js';
 
 export const TOOLS = {
   search: { label: 'Search', icon: 'search' },
+  text: { label: 'Text size', icon: 'type', reflow: true },
   bookmark: { label: 'Bookmark page', icon: 'bookmark' },
   bookmarks: { label: 'Bookmarks', icon: 'bookmarks' },
   stopmark: { label: 'Mark where I stopped', icon: 'flag' },
@@ -24,7 +26,7 @@ export const TOOLS = {
   fullscreen: { label: 'Full screen', icon: 'expand' },
   settings: { label: 'Settings', icon: 'settings' },
 };
-export const DEFAULT_FAVORITES = ['search', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'];
+export const DEFAULT_FAVORITES = ['search', 'text', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'];
 const DOCK_MIN = 900; // screens at least this wide keep Search open beside the book
 const DOCK_W = 380;
 
@@ -421,7 +423,53 @@ export class ReaderTools {
     });
   }
 
+  // ---- text (EPUB books)
+
+  /** Text size, font and line spacing; the book is set again as they change. */
+  openText() {
+    const body = this.#openPanel('text', 'Text');
+    const s = getSettings();
+    const chip = (key, val, label, extra = '') => `<button class="tx-chip" role="radio" data-key="${key}" data-val="${val}" aria-checked="${s[key] === val}"${extra}>${label}</button>`;
+    body.innerHTML = `
+      <div class="tx-row">
+        <span class="tx-label">Size</span>
+        <div class="tx-size">
+          <button data-size="-1" aria-label="Smaller text"><span style="font-size:15px">A</span></button>
+          <output>${s.epubSize}%</output>
+          <button data-size="1" aria-label="Larger text"><span style="font-size:23px">A</span></button>
+        </div>
+      </div>
+      <div class="tx-row">
+        <span class="tx-label">Font</span>
+        <div class="tx-chips" role="radiogroup">${Object.keys(FONTS)
+          .map((k) => chip('epubFont', k, FONTS[k].label, ` style="font-family:${FONTS[k].family.replace(/"/g, "'")}"`))
+          .join('')}</div>
+      </div>
+      <div class="tx-row">
+        <span class="tx-label">Line spacing</span>
+        <div class="tx-chips" role="radiogroup">${chip('epubSpacing', 'compact', 'Compact')}${chip('epubSpacing', 'normal', 'Normal')}${chip('epubSpacing', 'relaxed', 'Relaxed')}</div>
+      </div>
+      <p class="tp-hint">The pages are set again for the new text; you stay at the same place in the book.</p>`;
+    body.onclick = (e) => {
+      const size = e.target.closest('[data-size]');
+      const c = e.target.closest('[data-key]');
+      if (size) {
+        const v = Math.max(70, Math.min(200, getSettings().epubSize + 10 * +size.dataset.size));
+        body.querySelector('output').textContent = `${v}%`;
+        setSetting('epubSize', v);
+      } else if (c) {
+        for (const b of body.querySelectorAll(`[data-key="${c.dataset.key}"]`)) b.setAttribute('aria-checked', b === c);
+        setSetting(c.dataset.key, c.dataset.val);
+      }
+    };
+  }
+
   // ------------------------------------------------------------------ tools
+
+  /** Tools that make sense for this book (text settings only for EPUB books). */
+  #usable(id) {
+    return !TOOLS[id].reflow || !!this.api.reflowable;
+  }
 
   #label(id) {
     if (id === 'bookmark') return this.isBookmarked(this.api.currentPage()) ? 'Remove bookmark' : 'Bookmark page';
@@ -447,6 +495,8 @@ export class ReaderTools {
         return this.api.goToStop();
       case 'contents':
         return this.openContents();
+      case 'text':
+        return this.openText();
       case 'tone': {
         const t = getSettings().pageTone;
         const next = TONES[(TONES.indexOf(t) + 1) % TONES.length];
@@ -634,7 +684,7 @@ export class ReaderTools {
       /* rendered when opened */
     }
     const fav = this.favorites;
-    const ids = all ? Object.keys(TOOLS).filter((id) => !fav.includes(id)) : fav;
+    const ids = (all ? Object.keys(TOOLS).filter((id) => !fav.includes(id)) : fav).filter((id) => this.#usable(id));
     this.fabMenu.dataset.all = all ? '1' : '';
     const item = (id) => `<button role="menuitem" data-tool="${id}"><span class="fm-ico">${icons[TOOLS[id].icon]}</span><span class="fm-label">${esc(this.#label(id))}</span></button>`;
     this.fabMenu.innerHTML =
@@ -740,6 +790,8 @@ export class ReaderTools {
   }
 
   destroy() {
+    // The panel and bars live beside the reader; take them along.
+    for (const el of [this.panel, this.findBar, this.fabMenu, this.fab]) if (el) el.remove();
     document.removeEventListener('pointerdown', this.outside, true);
     document.removeEventListener('pointerdown', this.outsidePanel, true);
     document.removeEventListener('pointerup', this.outsideUp, true);

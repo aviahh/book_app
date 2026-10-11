@@ -12,7 +12,10 @@
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource-variable/literata": "^5.3.0",
     "@fontsource/cormorant-garamond": "^5.2.8",
+    "fflate": "^0.8.3",
+    "hyphen": "^1.14.1",
     "pdfjs-dist": "^6.4.299",
     "pdfjs-legacy": "npm:pdfjs-dist@2.16.105"
   },

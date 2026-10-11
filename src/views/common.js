@@ -77,12 +77,12 @@ export function progressOf(book) {
   return Math.min(1, (book.lastPage - 1) / (book.pageCount - 1));
 }
 
-/** Open the system file picker and import the chosen PDFs. */
+/** Open the system file picker and import the chosen books. */
 export function pickFiles() {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.pdf,application/pdf';
+    input.accept = '.pdf,application/pdf,.epub,application/epub+zip';
     input.multiple = true;
     input.style.display = 'none';
     input.addEventListener('change', () => {
@@ -99,7 +99,7 @@ export async function importFiles(files, view, onProgress) {
   const pdfs = files.filter(isSupportedFile);
   const skipped = files.length - pdfs.length;
   if (!pdfs.length) {
-    if (skipped) toast(view, 'Only PDF books are supported for now');
+    if (skipped) toast(view, 'Only PDF and EPUB books can be added');
     return 0;
   }
   const ids = new Set((await listBooks()).map((b) => b.id));
@@ -143,7 +143,7 @@ export function importOverlay(view) {
   };
 }
 
-/** Enable dropping PDF files anywhere on the view (desktop convenience). */
+/** Enable dropping book files anywhere on the view (desktop convenience). */
 export function enableDrop(view, onFiles) {
   const over = (e) => {
     if ([...(e.dataTransfer?.types || [])].includes('Files')) {

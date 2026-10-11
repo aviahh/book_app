@@ -56,7 +56,7 @@ export async function mountLibrary(view, _params, nav) {
       </div>
     </section>
     <section class="grid" aria-live="polite"></section>
-    <div class="drop-hint" aria-hidden="true"><div>Drop PDF files to add them</div></div>`;
+    <div class="drop-hint" aria-hidden="true"><div>Drop PDF or EPUB files to add them</div></div>`;
 
   const grid = content.querySelector('.grid');
 
@@ -127,7 +127,7 @@ export async function mountLibrary(view, _params, nav) {
         <div class="lib-empty">
           <div class="welcome-art" aria-hidden="true"><span></span><span></span><span></span></div>
           <h2>No books yet</h2>
-          <p>Tap <b>Add books</b> to choose PDF files from this device — from Files, iCloud Drive, Downloads or any folder you can browse.</p>
+          <p>Tap <b>Add books</b> to choose PDF or EPUB books from this device — from Files, iCloud Drive, Downloads or any folder you can browse.</p>
           <button class="btn primary" data-act="add">${icons.plus} Add books</button>
         </div>`;
       return;

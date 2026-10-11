@@ -11,7 +11,7 @@ export async function mountSettings(view, _p, nav) {
       ${options.map(([v, l]) => `<button role="radio" data-key="${key}" data-val="${v}" aria-checked="${getSettings()[key] === v}">${l}</button>`).join('')}
     </div>`;
   const toggle = (key) => `<button class="switch" role="switch" data-toggle="${key}" aria-checked="${getSettings()[key]}"><i></i></button>`;
-  const UNITS = { autoHideSeconds: ' s', popupSeconds: ' s', returnSeconds: ' s' };
+  const UNITS = { autoHideSeconds: ' s', popupSeconds: ' s', returnSeconds: ' s', epubSize: '%' };
   const shown = (key, v) => (key === 'popupSeconds' && v === 0 ? 'Never' : `${v}${UNITS[key] || ''}`);
   const stepper = (key, min, max, step = 1) => `
     <div class="stepper" data-stepper="${key}" data-min="${min}" data-max="${max}" data-step="${step}">
@@ -105,6 +105,13 @@ export async function mountSettings(view, _p, nav) {
         ${row('Surroundings', 'The colour around the book.', seg('backdrop', [['night', 'Ink'], ['walnut', 'Walnut'], ['linen', 'Linen']]), { sub: true })}
       </div>
 
+      <h2>EPUB books</h2>
+      <div class="set-group">
+        ${row('Text size', 'EPUB books are set into pages for this device. 100% is the usual size for its screen.', stepper('epubSize', 70, 200, 10))}
+        ${row('Font', '', seg('epubFont', [['literata', 'Literata'], ['sans', 'Sans'], ['georgia', 'Classic']]))}
+        ${row('Line spacing', '', seg('epubSpacing', [['compact', 'Compact'], ['normal', 'Normal'], ['relaxed', 'Relaxed']]))}
+      </div>
+
       <h2>Translation</h2>
       <div class="set-group">
         ${row('Translate words into', 'Press and hold any word while reading; drag the handles to translate a phrase.', select('translateTo', LANGUAGES))}
@@ -129,7 +136,7 @@ export async function mountSettings(view, _p, nav) {
 
       <h2>Backup</h2>
       <div class="set-group">
-        ${row('What to back up', 'Progress only: your library list, reading progress, statistics and settings. With books: the PDFs as well.', `
+        ${row('What to back up', 'Progress only: your library list, reading progress, statistics and settings. With books: the book files as well.', `
           <div class="segmented" role="radiogroup">
             <button role="radio" data-bk="0" aria-checked="true">Progress only</button><button role="radio" data-bk="1" aria-checked="false">With books</button>
           </div>`)}
