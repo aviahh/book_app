@@ -12,7 +12,7 @@
 
 import { listBooks, getBookFile, removeBook } from '../db.js';
 import { importFile } from '../pdf.js';
-import { account, post, noteDrive, driveCopy, cloudBooks, onRemovedEverywhere, removeEverywhere } from './engine.js';
+import { account, post, noteDrive, driveCopy, driveCopies, cloudBooks, onRemovedEverywhere, removeEverywhere } from './engine.js';
 import { isFamilyBook } from './family.js';
 import { fileKind } from './items.js';
 
@@ -140,6 +140,58 @@ export async function driveSummary() {
   let done = 0;
   for (const b of books) if (await driveCopy(b.syncId)) done++;
   return { done, total: books.length, uploading: progress.uploading };
+}
+
+// ---------------------------------------------------------------- deleted in Drive
+
+const CHECKED_KEY = 'folio.drive.checked.v1';
+const CHECK_EVERY = 10 * 60 * 1000;
+
+/**
+ * Drive is where the books live: a book whose file was deleted from Drive
+ * (or put in the Drive trash), by hand in Drive or anywhere else, leaves
+ * the library on every device. Each missing file is confirmed one by one
+ * before anything is removed, so a failed or partial answer never empties
+ * the library. Runs at most every few minutes.
+ */
+export async function removeBooksDeletedInDrive({ force = false } = {}) {
+  if (!driveOn() || navigator.onLine === false) return 0;
+  let last = 0;
+  try {
+    last = +localStorage.getItem(CHECKED_KEY) || 0;
+  } catch (e) {}
+  if (!force && Date.now() - last < CHECK_EVERY) return 0;
+  const known = await driveCopies();
+  if (!known.length) return 0;
+  // Everything Folio can see in Drive (with drive.file, only its own files), not in the trash.
+  const alive = new Set();
+  let pageToken = '';
+  do {
+    const res = await (await drive(`/drive/v3/files?q=${q('trashed=false')}&fields=${q('nextPageToken,files(id)')}&pageSize=1000${pageToken ? '&pageToken=' + q(pageToken) : ''}`)).json();
+    for (const f of res.files || []) alive.add(f.id);
+    pageToken = res.nextPageToken || '';
+  } while (pageToken);
+  let removed = 0;
+  for (const { sid, copy } of known) {
+    if (alive.has(copy.id)) continue;
+    // Not listed: make sure it's really gone (deleted, or in the trash).
+    let gone = false;
+    try {
+      const r = await fetch(`${API}/drive/v3/files/${encodeURIComponent(copy.id)}?fields=id,trashed`, { headers: { Authorization: 'Bearer ' + (await accessToken()) } });
+      gone = r.status === 404 || (r.ok && (await r.json()).trashed === true);
+    } catch (e) {}
+    if (!gone) continue;
+    // Off this device, and (by the tombstone) off every other one.
+    await noteDrive(sid, null);
+    const here = (await listBooks()).filter((b) => b.syncId === sid);
+    for (const b of here) await removeBook(b.id);
+    if (!here.length) await removeEverywhere(sid);
+    removed++;
+  }
+  try {
+    localStorage.setItem(CHECKED_KEY, String(Date.now()));
+  } catch (e) {}
+  return removed;
 }
 
 // ---------------------------------------------------------------- downloading

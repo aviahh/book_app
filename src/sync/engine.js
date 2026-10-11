@@ -381,6 +381,17 @@ export async function noteDrive(sid, v) {
   }
 }
 
+/** Every book the account has a copy of in Drive: [{ sid, copy: { id, size } }]. */
+export async function driveCopies() {
+  await ready();
+  const out = [];
+  for (const it of items.values()) {
+    const m = /^b:([0-9a-f]+):drive$/.exec(it.k);
+    if (m && !it.d && it.v && it.v.id) out.push({ sid: m[1], copy: it.v });
+  }
+  return out;
+}
+
 export async function driveCopy(sid) {
   await ready();
   const it = items.get(`b:${sid}:drive`);

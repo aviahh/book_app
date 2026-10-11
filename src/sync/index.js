@@ -8,7 +8,7 @@
 // read: everything is saved on the device first.
 
 import { account, setAccount, forgetAccount, syncNow, watchLocal, deviceName, post, onRemoteBook } from './engine.js';
-import { keepBooksInDrive } from './drive.js';
+import { keepBooksInDrive, removeBooksDeletedInDrive } from './drive.js';
 import { forgetFamily } from './family.js';
 
 const listeners = new Set();
@@ -65,7 +65,12 @@ export async function runSync() {
     emit();
   }
   // Books not in Drive yet go up in the background (when that's on).
-  keepBooksInDrive().then(emit);
+  // Books deleted in Drive itself leave the library first; then what's missing goes up.
+  removeBooksDeletedInDrive()
+    .catch((e) => console.warn(e))
+    .then((n) => (n ? syncNow() : null))
+    .then(() => keepBooksInDrive())
+    .then(emit);
 }
 
 function soon(ms = AFTER_CHANGE) {
