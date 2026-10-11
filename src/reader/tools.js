@@ -111,6 +111,8 @@ export class ReaderTools {
   closePanel() {
     const wasSearch = this.panelKind === 'search';
     if (wasSearch) this.searchToken = (this.searchToken || 0) + 1;
+    // Let go of a text box in the panel (and the keyboard with it).
+    if (document.activeElement && this.panel.contains(document.activeElement)) document.activeElement.blur();
     this.panel.hidden = true;
     this.panelKind = null;
     this.#undock();

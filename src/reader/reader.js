@@ -1572,6 +1572,10 @@ class Reader {
 
     on(this.stage, 'pointerdown', (e) => this.#down(e));
     on(this.stage, 'contextmenu', (e) => e.preventDefault()); // press and hold is ours (translation)
+    // Every touch on the page is handled here. Saying so stops the browser
+    // treating a tap as unanswered and stepping in itself (Chrome on Android
+    // offers "Touch to Search" for a word tapped on an idle page).
+    on(this.stage, 'touchend', (e) => e.cancelable && e.preventDefault(), { passive: false });
     on(window, 'pointermove', (e) => this.#move(e));
     on(window, 'pointerup', (e) => this.#up(e));
     on(window, 'pointercancel', (e) => this.#up(e, true));
