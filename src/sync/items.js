@@ -6,6 +6,7 @@
 //   b:<sid>:meta     title, author … (a tombstone: removed from the library)
 //   b:<sid>:prog     lastPage, readingPos, finished (+ lastOpenedAt, from)
 //   b:<sid>:series   { name, index } once set by hand
+//   b:<sid>:comic    a comic's reading mode { rtl, view } (its page numbers depend on it)
 //   b:<sid>:stop     "Where I stopped"
 //   b:<sid>:bm:<n>   bookmark on page n, with its note
 //   b:<sid>:cover    a small cover picture (for books not on this device)
@@ -86,6 +87,7 @@ export function bookItems(book) {
     seed: started ? book.lastOpenedAt || 1 : 0,
   });
   if (book.seriesName !== undefined) out.push({ k: `b:${sid}:series`, v: { name: book.seriesName, index: book.seriesIndex == null ? null : book.seriesIndex }, seed: book.addedAt || 0 });
+  if (book.comic) out.push({ k: `b:${sid}:comic`, v: { rtl: !!book.comic.rtl, view: book.comic.view === 'scroll' ? 'scroll' : 'pages' }, seed: book.addedAt || 0 });
   if (book.stopMark) out.push({ k: `b:${sid}:stop`, v: Object.assign({}, book.stopMark, { page: posOf(book, book.stopMark.page) }), seed: book.stopMark.at || 0 });
   const seen = new Set();
   for (const b of book.bookmarks || []) {
@@ -157,7 +159,7 @@ function keep(patch, pairs) {
 
 /** Split a key into its parts: { kind: 'book' | 'setting' | 'stats', sid, field, page, … }. */
 export function parseKey(k) {
-  let m = /^b:([0-9a-f]+):(meta|prog|series|stop|cover|drive)$/.exec(k);
+  let m = /^b:([0-9a-f]+):(meta|prog|series|stop|cover|drive|comic)$/.exec(k);
   if (m) return { kind: 'book', sid: m[1], field: m[2] };
   m = /^b:([0-9a-f]+):bm:(\d+|e\d+\.\d+)$/.exec(k);
   if (m) return { kind: 'book', sid: m[1], field: 'bm', pos: /^\d+$/.test(m[2]) ? +m[2] : m[2] };
@@ -187,6 +189,10 @@ export function patchFor(book, item, items) {
     if (item.d || !item.v) return { seriesName: undefined, seriesIndex: undefined };
     return { seriesName: typeof item.v.name === 'string' ? item.v.name : undefined, seriesIndex: item.v.index == null ? undefined : num(item.v.index, undefined) };
   }
+  if (p.field === 'comic') {
+    if (item.d || !item.v) return null;
+    return { comic: { rtl: !!item.v.rtl, view: item.v.view === 'scroll' ? 'scroll' : 'pages' } };
+  }
   if (p.field === 'stop') {
     if (item.d || !item.v) return { stopMark: null };
     const page = pageOf(book, item.v.page);
@@ -213,4 +219,12 @@ export function patchFor(book, item, items) {
     return keep({ bookmarks: list }, kept);
   }
   return null;
+}
+
+/** A book file's type and extension, from its format and file name. */
+export function fileKind(format, fileName) {
+  const ext = ((fileName || '').match(/\.(pdf|epub|cbz|cbr)$/i) || [])[1];
+  const e = (ext || (format === 'epub' ? 'epub' : format === 'comic' ? 'cbz' : 'pdf')).toLowerCase();
+  const type = { pdf: 'application/pdf', epub: 'application/epub+zip', cbz: 'application/vnd.comicbook+zip', cbr: 'application/vnd.comicbook-rar' }[e];
+  return { ext: e, type };
 }

@@ -4,6 +4,7 @@ import { cloudBooks, driveCopy } from './engine.js';
 import { driveOn, downloadBook, removeDownload, removeCloudBook } from './drive.js';
 import { familyList, familyCached, ownerName, downloadFamilyBook } from './family.js';
 import { listBooks } from '../db.js';
+import { status } from './index.js';
 
 export const cloudIcon =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18.5h10.2a4.3 4.3 0 0 0 .6-8.56A6 6 0 0 0 6.3 9.1 4.75 4.75 0 0 0 7 18.5z"/></svg>';
@@ -74,6 +75,38 @@ export async function openCloudBook(view, book, nav) {
     el.remove();
     throw e;
   }
+}
+
+/**
+ * Removing a book that is on this device, while sync is on: ask whether it
+ * goes from this device only (its place, bookmarks and marks stay in the
+ * account) or from the library on every device. Resolves 'here', 'all' or
+ * null (cancelled). Without an account, a plain confirmation.
+ */
+export function askRemove(view, book, hasCopy) {
+  if (!status().signedIn) {
+    return Promise.resolve(confirm(`Remove “${book.title}” from your library? The file on your device is not affected.`) ? 'all' : null);
+  }
+  return new Promise((resolve) => {
+    const sheet = document.createElement('div');
+    sheet.className = 'sheet-backdrop';
+    sheet.innerHTML = `
+      <div class="sheet remove-sheet" role="dialog" aria-modal="true" aria-label="Remove book">
+        <h2>Remove book</h2>
+        <p class="sheet-sub"></p>
+        <button class="rm-choice" data-r="here"><b>From this device</b><span>${hasCopy ? 'Frees the space here. It stays in your library and in Google Drive, with your place and bookmarks.' : 'Frees the space here. Your place and bookmarks are kept: add the file again any time and they come back.'}</span></button>
+        <button class="rm-choice danger" data-r="all"><b>From all my devices</b><span>${hasCopy ? 'Removes it from your library everywhere. Its copy in Google Drive moves to the Drive trash.' : 'Removes it from your library on every device signed in to your account.'}</span></button>
+        <div class="sheet-actions"><button class="btn subtle" data-r="">Cancel</button></div>
+      </div>`;
+    sheet.querySelector('.sheet-sub').textContent = book.title;
+    view.append(sheet);
+    sheet.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-r]');
+      if (!b && e.target !== sheet) return;
+      sheet.remove();
+      resolve(b ? b.dataset.r || null : null);
+    });
+  });
 }
 
 /** Menu items for a book card (Drive-related ones). */

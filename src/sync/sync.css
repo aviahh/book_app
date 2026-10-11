@@ -109,3 +109,33 @@
 .family-card .card-cover .book3d img {
   filter: saturate(0.9);
 }
+
+/* Remove a book: from this device, or from all devices */
+.rm-choice {
+  display: block;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  text-align: left;
+}
+.rm-choice b {
+  display: block;
+  font-weight: 600;
+}
+.rm-choice span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+.rm-choice.danger b {
+  color: #b4472f;
+}
+.rm-choice:active {
+  background: var(--accent-soft);
+}

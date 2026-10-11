@@ -14,6 +14,7 @@ import { listBooks, getBookFile, removeBook } from '../db.js';
 import { importFile } from '../pdf.js';
 import { account, post, noteDrive, driveCopy, cloudBooks, onRemovedEverywhere, removeEverywhere } from './engine.js';
 import { isFamilyBook } from './family.js';
+import { fileKind } from './items.js';
 
 const API = 'https://www.googleapis.com';
 const FOLDER_KEY = 'folio.drive.v1';
@@ -69,8 +70,9 @@ async function findCopy(sid) {
 async function upload(book) {
   const file = await getBookFile(book.id);
   if (!file) return null;
-  const type = book.format === 'epub' ? 'application/epub+zip' : 'application/pdf';
-  const name = book.fileName || `${book.title}.${book.format === 'epub' ? 'epub' : 'pdf'}`;
+  const kind = fileKind(book.format, book.fileName);
+  const type = kind.type;
+  const name = book.fileName || `${book.title}.${kind.ext}`;
   const meta = { name, mimeType: type, parents: [await folder()], appProperties: { folioSid: book.syncId } };
   const start = await drive('/upload/drive/v3/files?uploadType=resumable&fields=id,size', {
     method: 'POST',
@@ -161,8 +163,9 @@ export async function downloadBook(sid, onProgress = () => {}) {
   });
   const books = (await cloudBooks()).filter((b) => b.sid === sid);
   const meta = (books[0] && books[0].meta) || {};
-  const name = meta.fileName || `${meta.title || 'Book'}.${meta.format === 'epub' ? 'epub' : 'pdf'}`;
-  const file = new File([blob], name, { type: blob.type || (meta.format === 'epub' ? 'application/epub+zip' : 'application/pdf') });
+  const kind = fileKind(meta.format, meta.fileName);
+  const name = meta.fileName || `${meta.title || 'Book'}.${kind.ext}`;
+  const file = new File([blob], name, { type: kind.type });
   const ids = new Set((await listBooks()).map((b) => b.id));
   const book = await importFile(file, ids);
   // Already here under the same local id: find it.

@@ -2,7 +2,7 @@ import { listBooks, removeBook, updateBook } from '../db.js';
 import { icons } from '../icons.js';
 import { groupSeries, seriesOf, volumeLabel } from '../series.js';
 import { shell, esc, coverUrls, progressOf, addBooksFlow, enableDrop, toast } from './common.js';
-import { cloudLibrary, inDrive, cloudIcon, openCloudBook, cloudMenu, cloudMenuAction, familyLibraries, familyShelves, mountFamilyPage } from '../sync/library.js';
+import { cloudLibrary, inDrive, cloudIcon, openCloudBook, cloudMenu, cloudMenuAction, familyLibraries, familyShelves, mountFamilyPage, askRemove } from '../sync/library.js';
 
 const latest = (b) => b.lastOpenedAt || b.addedAt || 0;
 
@@ -220,9 +220,11 @@ export async function mountLibrary(view, _params, nav) {
         toast(view, 'Removed from the series');
         await load();
       } else if (m === 'remove') {
-        if (!confirm(`Remove “${b.title}” from your library? The file on your device is not affected.${driveCopies.has(b.id) ? ' Its copy in Google Drive moves to the Drive trash.' : ''}`)) return;
-        await removeBook(b.id);
-        toast(view, 'Removed from library');
+        const where = await askRemove(view, b, driveCopies.has(b.id));
+        if (!where) return;
+        // "This device" leaves the book in the account (sync treats it like a removed download).
+        await removeBook(b.id, where === 'here' ? 'download' : undefined);
+        toast(view, where === 'here' ? 'Removed from this device' : 'Removed from library');
         await load();
       }
     });

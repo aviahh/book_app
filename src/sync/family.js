@@ -5,6 +5,7 @@
 import { listBooks } from '../db.js';
 import { importFile } from '../pdf.js';
 import { account, post } from './engine.js';
+import { fileKind } from './items.js';
 
 const SIDS_KEY = 'folio.family.sids.v1'; // books that came from a family library: never put into this account's Drive
 const LIST_KEY = 'folio.family.v1'; // the last list, so the library can show it at once
@@ -95,8 +96,9 @@ export async function downloadFamilyBook(owner, book, onProgress = () => {}) {
     x.send();
   });
   const meta = book.meta || {};
-  const name = meta.fileName || `${meta.title || 'Book'}.${meta.format === 'epub' ? 'epub' : 'pdf'}`;
-  const file = new File([blob], name, { type: blob.type || (meta.format === 'epub' ? 'application/epub+zip' : 'application/pdf') });
+  const kind = fileKind(meta.format, meta.fileName);
+  const name = meta.fileName || `${meta.title || 'Book'}.${kind.ext}`;
+  const file = new File([blob], name, { type: kind.type });
   const ids = new Set((await listBooks()).map((b) => b.id));
   const added = await importFile(file, ids);
   return added || (await listBooks()).find((b) => b.syncId === book.sid || b.fileName === name) || null;
