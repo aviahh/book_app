@@ -121,7 +121,7 @@ export async function restoreBackup(file, onProgress = () => {}) {
     } else if (fileAt) {
       const book = Object.assign({}, meta, { cover: coverAt ? slice(coverAt) : null });
       // Copy into memory-backed blobs, so nothing points into the backup file.
-      const pdf = new Blob([await slice(fileAt).arrayBuffer()], { type: 'application/pdf' });
+      const pdf = new Blob([await slice(fileAt).arrayBuffer()], { type: fileAt.type || (meta.format === 'epub' ? 'application/epub+zip' : 'application/pdf') });
       if (book.cover) book.cover = new Blob([await book.cover.arrayBuffer()], { type: book.cover.type || 'image/jpeg' });
       await addBook(book, pdf);
       result.added++;

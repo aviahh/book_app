@@ -89,8 +89,8 @@ export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels
     throw new CanvasMemoryError();
   }
   try {
-    await page.render({ canvasContext: ctx, viewport, background: '#fff' }).promise;
-    if (tone !== 'original') await applyTone(canvas, page, viewport, tone);
+    await page.render({ canvasContext: ctx, viewport, background: '#fff', tone }).promise;
+    if (tone !== 'original' && !page.selfToned) await applyTone(canvas, page, viewport, tone);
     if (!canvasOk(canvas)) throw new CanvasMemoryError();
   } catch (e) {
     releaseCanvas(canvas);
@@ -101,6 +101,7 @@ export async function renderPageCanvas(page, cssWidth, { maxDpr = 2.5, maxPixels
 
 /** Build a selectable/hit-testable text layer sized to `cssWidth`. */
 export async function buildTextLayer(page, container, cssWidth) {
+  if (page.buildTextLayer) return page.buildTextLayer(container, cssWidth); // EPUB pages make their own
   const base = page.getViewport({ scale: 1 });
   const viewport = page.getViewport({ scale: cssWidth / base.width });
   return (await pdfEngine()).textLayer(page, container, viewport);
@@ -137,12 +138,14 @@ async function hashId(file) {
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
 
-export const isSupportedFile = (f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf';
+export const isEpubFile = (f) => /\.epub$/i.test(f.name) || f.type === 'application/epub+zip';
+export const isSupportedFile = (f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf' || isEpubFile(f);
 
-/** Import one PDF file into the library. Returns the stored book record. */
+/** Import one book file (PDF or EPUB) into the library. Returns the stored book record. */
 export async function importFile(file, existingIds = new Set()) {
   const id = await hashId(file);
   if (existingIds.has(id)) return null;
+  if (isEpubFile(file)) return (await import('./epub/index.js')).importEpub(file, id, takePendingProgress(id));
   const data = new Uint8Array(await file.arrayBuffer());
   const doc = await openPdf(data.slice());
   try {
