@@ -30,7 +30,7 @@ Then on the iPad open the site in Safari → Share → **Add to Home Screen**.
 | Screen | |
 |---|---|
 | **Reading Room** (home) | Continue-reading card with progress, reading rhythm (today, streak, this week), recently opened and new books. |
-| **Library** | Cover grid, search, sort (recent / title / author), add books from Files / iCloud / Downloads (or drag & drop on a computer), mark finished, remove. |
+| **Library** | Cover grid, search, sort (recent / title / author), add books from Files / iCloud / Downloads (or drag & drop on a computer), mark finished, remove. Books of a series ("Vol. 3", "Book 3", "#3" …) are stacked on one shelf, volumes in order; any book can be put in a series by hand. The Reading Room offers the next volume after you finish one. |
 | **Reader** | Landscape: cover alone, then two-page spreads with a spine gradient and a realistic page curl (swipe from the page edge). Portrait: pages scroll vertically. Pinch to zoom and drag to pan in both; full screen while reading; fading side arrows (tap to reveal, tap again to turn — or single-tap mode in Settings); auto-hiding toolbar. |
 | **Toolbar** | Thumbnails strip · first / −N / −1 · page indicator (tap to type a page) · +1 / +N / last · read aloud · orientation lock. |
 | **Words** | Press and hold a word → translation bubble with pronunciation and copy (Google Translate). Double-tap zooms in, and double-tap again zooms back out. |

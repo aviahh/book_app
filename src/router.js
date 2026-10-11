@@ -21,6 +21,7 @@ export const currentRoute = () => top();
 /** A sensible stack for a screen opened directly (reload, shared link). */
 function defaultStack(hash) {
   if (hash === ROOT) return [ROOT];
+  if (hash.startsWith('#/library?series=')) return [ROOT, '#/library', hash];
   if (hash.startsWith('#/library')) return [ROOT, hash];
   if (hash.startsWith('#/read/')) return [ROOT, '#/library', hash];
   if (hash.startsWith('#/settings')) {
@@ -55,6 +56,7 @@ export function nav(target) {
   const i = stack.indexOf(target);
   if (i >= 0) stack = stack.slice(0, i + 1);
   else if (target === ROOT) stack = [ROOT];
+  else if (target.startsWith('#/library?series=')) stack = [ROOT, '#/library', target]; // a series shelf, one level into the library
   else if (target.startsWith('#/library')) stack = [ROOT, target]; // a main tab
   else stack = [...stack, target];
   show();

@@ -3,6 +3,7 @@
 import { listBooks } from '../db.js';
 import { icons } from '../icons.js';
 import { readingStats } from '../stats.js';
+import { nextInSeries, seriesOf, volumeLabel } from '../series.js';
 import { shell, esc, coverUrls, progressOf, addBooksFlow, enableDrop } from './common.js';
 
 export async function mountHome(view, _params, nav) {
@@ -13,7 +14,9 @@ export async function mountHome(view, _params, nav) {
     const books = await listBooks();
     await covers.load(books);
     const opened = books.filter((b) => b.lastOpenedAt).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
-    const current = opened.find((b) => !b.finished) || opened[0];
+    // Just finished a volume of a series: offer the next one.
+    const upNext = opened[0] && opened[0].finished ? nextInSeries(opened[0], books) : null;
+    const current = upNext ? upNext.book : opened.find((b) => !b.finished) || opened[0];
     const recent = opened.filter((b) => b !== current).slice(0, 8);
     const fresh = books.filter((b) => !b.lastOpenedAt).sort((a, b) => b.addedAt - a.addedAt).slice(0, 8);
     const stats = readingStats();
@@ -29,7 +32,7 @@ export async function mountHome(view, _params, nav) {
         <p class="eyebrow">${esc(date)}</p>
         <h1>${greeting}</h1>
       </section>
-      ${current ? heroHtml(current) : books.length ? startHtml(books) : emptyHtml()}
+      ${current ? heroHtml(current, upNext) : books.length ? startHtml(books) : emptyHtml()}
       ${
         books.length
           ? `<section class="stats" aria-label="Reading rhythm">
@@ -59,20 +62,24 @@ export async function mountHome(view, _params, nav) {
     `;
   }
 
-  function heroHtml(b) {
+  function heroHtml(b, upNext) {
     const p = progressOf(b);
+    const s = seriesOf(b);
+    const vol = s && s.index != null ? volumeLabel(s.index) : '';
+    const eyebrow = upNext ? `Up next · ${esc(upNext.series.name)}${vol ? ` · ${vol}` : ''}` : 'Continue reading';
+    const started = b.lastOpenedAt && !b.finished;
     return `
       <section class="hero">
         <a class="hero-cover" href="#/read/${b.id}" aria-label="Continue ${esc(b.title)}">
           <span class="book3d" style="--ar:${b.aspect || 0.7}"><img src="${covers.get(b)}" alt=""></span>
         </a>
         <div class="hero-info">
-          <p class="eyebrow">Continue reading</p>
+          <p class="eyebrow">${eyebrow}</p>
           <h2>${esc(b.title)}</h2>
           ${b.author ? `<p class="author">${esc(b.author)}</p>` : ''}
-          <div class="progress" role="progressbar" aria-valuenow="${Math.round(p * 100)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${p * 100}%"></i></div>
-          <p class="meta">Page ${b.lastPage} of ${b.pageCount} · ${Math.round(p * 100)}%</p>
-          <a class="btn primary" href="#/read/${b.id}">${icons.book} Resume reading</a>
+          ${started || !upNext ? `<div class="progress" role="progressbar" aria-valuenow="${Math.round(p * 100)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${p * 100}%"></i></div>` : ''}
+          <p class="meta">${started || !upNext ? `Page ${b.lastPage} of ${b.pageCount} · ${Math.round(p * 100)}%` : `${b.pageCount} pages`}</p>
+          <a class="btn primary" href="#/read/${b.id}">${icons.book} ${started || !upNext ? 'Resume reading' : `Start ${vol || 'reading'}`}</a>
         </div>
       </section>`;
   }
