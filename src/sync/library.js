@@ -6,6 +6,8 @@ import { familyList, familyCached, ownerName, downloadFamilyBook } from './famil
 import { listBooks } from '../db.js';
 import { status } from './index.js';
 
+const mb = (n) => (n > 1048576 ? `${Math.round(n / 1048576)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
 export const cloudIcon =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18.5h10.2a4.3 4.3 0 0 0 .6-8.56A6 6 0 0 0 6.3 9.1 4.75 4.75 0 0 0 7 18.5z"/></svg>';
 
@@ -21,6 +23,50 @@ function dataUrlToBlob(url) {
   }
 }
 
+/** A plain cover for a book nobody has opened yet (found in the Drive folder): its title on cloth. */
+const plainCovers = new Map();
+function plainCover(title, format) {
+  const key = title + '|' + format;
+  if (plainCovers.has(key)) return plainCovers.get(key);
+  let blob = null;
+  try {
+    const c = document.createElement('canvas');
+    c.width = 240;
+    c.height = 360;
+    const ctx = c.getContext('2d');
+    let h = 0;
+    for (const ch of title) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const hue = [18, 205, 150, 340, 40, 260][h % 6];
+    const g = ctx.createLinearGradient(0, 0, 0, 360);
+    g.addColorStop(0, `hsl(${hue},28%,32%)`);
+    g.addColorStop(1, `hsl(${hue},32%,20%)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 240, 360);
+    ctx.strokeStyle = 'rgba(232,205,160,0.5)';
+    ctx.strokeRect(12, 12, 216, 336);
+    ctx.fillStyle = '#efe3cc';
+    ctx.textAlign = 'center';
+    ctx.font = '600 22px Georgia, serif';
+    const words = title.split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const w of words) {
+      const t = line ? line + ' ' + w : w;
+      if (ctx.measureText(t).width > 190 && line) lines.push(line), (line = w);
+      else line = t;
+    }
+    lines.push(line);
+    let y = 150 - ((Math.min(lines.length, 6) - 1) * 27) / 2;
+    for (const l of lines.slice(0, 6)) ctx.fillText(l, 120, y), (y += 27);
+    ctx.font = '600 11px sans-serif';
+    ctx.fillStyle = 'rgba(239,227,204,0.6)';
+    ctx.fillText(format === 'epub' ? 'EPUB' : format === 'comic' ? 'COMIC' : 'PDF', 120, 320);
+    blob = dataUrlToBlob(c.toDataURL('image/jpeg', 0.85));
+  } catch (e) {}
+  plainCovers.set(key, blob);
+  return blob;
+}
+
 /** Library entries for books only in Drive (while Drive is on): look like books, with `cloud: true`. */
 export async function cloudLibrary() {
   if (!driveOn()) return [];
@@ -34,7 +80,7 @@ export async function cloudLibrary() {
       syncId: c.sid,
       format: m.format,
       title: m.title || 'Untitled',
-      author: m.author || '',
+      author: m.author || (m.pageCount ? '' : `${m.format === 'epub' ? 'EPUB' : m.format === 'comic' ? 'Comic' : 'PDF'} · ${mb(m.size || 0)}`),
       pageCount: m.pageCount || 0,
       aspect: m.aspect || 0.7,
       addedAt: m.addedAt || 0,
@@ -44,7 +90,7 @@ export async function cloudLibrary() {
       finished: !!p.finished,
       seriesName: c.series ? c.series.name : undefined,
       seriesIndex: c.series && c.series.index != null ? c.series.index : undefined,
-      cover: c.cover ? dataUrlToBlob(c.cover) : null,
+      cover: c.cover ? dataUrlToBlob(c.cover) : plainCover(m.title || 'Untitled', m.format),
     };
   });
 }
@@ -57,7 +103,6 @@ export async function inDrive(books) {
   return out;
 }
 
-const mb = (n) => (n > 1048576 ? `${Math.round(n / 1048576)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 /** Download a cloud book (with a quiet progress card), then open it. */
 export async function openCloudBook(view, book, nav) {

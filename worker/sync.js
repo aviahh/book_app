@@ -157,7 +157,9 @@ async function openGrant(env, sealed) {
   return new TextDecoder().decode(pt);
 }
 
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+// The whole Drive: Folio's library is a folder you can also fill by hand (from a computer,
+// a phone …), and Folio must see those files too. Folio itself only ever touches that folder.
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 /** Start giving Folio access to its own folder in the account's Google Drive. */
 async function driveConnect(url, dev, env) {
@@ -281,7 +283,7 @@ async function googleCallback(url, env) {
   if (asked.drive) {
     // Back from allowing Drive: only for the same Google account that is signed in.
     if ((await userIdFor(claims.sub)) !== asked.drive) return back('drive_error=account');
-    if (!tok.refresh_token || !String(tok.scope || '').includes(DRIVE_SCOPE)) return back('drive_error=denied');
+    if (!tok.refresh_token || String(tok.scope || '').split(' ').indexOf(DRIVE_SCOPE) < 0) return back('drive_error=denied');
     await env.DB.prepare(`UPDATE users SET grant_enc = ? WHERE id = ?`).bind(await sealGrant(env, tok.refresh_token), asked.drive).run();
     return back('drive=on');
   }
@@ -310,7 +312,7 @@ async function devLogin(url, env) {
 
 async function familyInvite(dev, env) {
   const g = await env.DB.prepare(`SELECT grant_enc FROM users WHERE id = ?`).bind(dev.userId).first();
-  if (!g || !g.grant_enc) return fail(409, 'Turn on “Keep books in Google Drive” first: family read the books from there.');
+  if (!g || !g.grant_enc) return fail(409, 'Turn on “Library in Google Drive” first: family read the books from there.');
   const code = await putCode(env, 'family', 24 * 60, { userId: dev.userId, length: 8 });
   return json({ code, expiresIn: 24 * 3600 });
 }

@@ -1,20 +1,24 @@
-// Books in the account's own Google Drive, in a folder called "Folio".
+// The library lives in the account's own Google Drive, in a folder called
+// "Folio" (and the folders inside it).
 //
-// Folio only has the narrowest access (drive.file): it sees the files it put
-// there itself, nothing else in the Drive. Files go straight between the
-// device and Google; the Worker only hands out a short-lived access token.
+// Books get there any way at all: copied from a computer, uploaded from a
+// phone, added in Folio. Folio finds them there (see syncFolder) and never
+// makes a second copy. Books added in Folio on a device go up into the
+// folder, one at a time, quietly. Other devices show every book in the
+// folder and download one when it's opened (or with "Download for
+// offline"). "Remove download" frees the space on one device; the book, its
+// progress and its file in Drive stay. A file deleted from the folder
+// leaves every device.
 //
-// While "Keep books in Google Drive" is on, every device puts its books that
-// aren't there yet into the folder, one at a time, quietly. Other devices
-// then show those books in the library and download one when it's opened
-// (or with "Download for offline"). "Remove download" frees the space on one
-// device; the book, its progress and its copy in Drive stay.
+// Folio has access to the whole Drive (it must see files it didn't put
+// there) but only ever works inside that folder. Files go straight between
+// the device and Google; the Worker only hands out a short-lived access token.
 
 import { listBooks, getBookFile, removeBook } from '../db.js';
 import { importFile } from '../pdf.js';
-import { account, post, noteDrive, driveCopy, driveCopies, cloudBooks, onRemovedEverywhere, removeEverywhere } from './engine.js';
+import { account, post, noteDrive, driveCopy, driveCopies, cloudBooks, onRemovedEverywhere, removeEverywhere, itemOf, noteFolderBook } from './engine.js';
 import { isFamilyBook } from './family.js';
-import { fileKind } from './items.js';
+import { fileKind, contentIdOf, CHUNK } from './items.js';
 
 const API = 'https://www.googleapis.com';
 const FOLDER_KEY = 'folio.drive.v1';
@@ -47,8 +51,14 @@ async function folder() {
   try {
     id = (JSON.parse(localStorage.getItem(FOLDER_KEY) || '{}') || {}).folder || '';
   } catch (e) {}
-  if (id) return id;
-  const found = await (await drive(`/drive/v3/files?q=${q(`name='Folio' and mimeType='${FOLDER_MIME}' and trashed=false`)}&fields=files(id,createdTime)&orderBy=createdTime`)).json();
+  if (id) {
+    try {
+      const r = await (await drive(`/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed`)).json();
+      if (!r.trashed) return id;
+    } catch (e) {}
+    id = '';
+  }
+  const found = await (await drive(`/drive/v3/files?q=${q(`name='Folio' and mimeType='${FOLDER_MIME}' and 'root' in parents and trashed=false`)}&fields=files(id,createdTime)&orderBy=createdTime`)).json();
   if (found.files && found.files.length) id = found.files[0].id;
   else {
     const made = await (await drive('/drive/v3/files?fields=id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Folio', mimeType: FOLDER_MIME }) })).json();
@@ -142,43 +152,133 @@ export async function driveSummary() {
   return { done, total: books.length, uploading: progress.uploading };
 }
 
-// ---------------------------------------------------------------- deleted in Drive
+// ---------------------------------------------------------------- the folder is the library
 
 const CHECKED_KEY = 'folio.drive.checked.v1';
-const CHECK_EVERY = 10 * 60 * 1000;
+const CHECK_EVERY = 60 * 1000;
+const BOOK_FILE = /\.(pdf|epub|cbz|cbr)$/i;
+const MAX_FOLDERS = 300;
+
+/** The files directly in one Drive folder (not in the trash). */
+async function children(folderId) {
+  const out = [];
+  let pageToken = '';
+  do {
+    const res = await (
+      await drive(
+        `/drive/v3/files?q=${q(`'${folderId}' in parents and trashed=false`)}&fields=${q('nextPageToken,files(id,name,mimeType,size,createdTime)')}&pageSize=1000${pageToken ? '&pageToken=' + q(pageToken) : ''}`,
+      )
+    ).json();
+    for (const f of res.files || []) out.push(f);
+    pageToken = res.nextPageToken || '';
+  } while (pageToken);
+  return out;
+}
+
+/** Every book file in the Folio folder and the folders inside it: { files, folders }. */
+async function scanFolder() {
+  const root = await folder();
+  const folders = new Set([root]);
+  const queue = [root];
+  const files = [];
+  while (queue.length) {
+    for (const f of await children(queue.shift())) {
+      if (f.mimeType === FOLDER_MIME) {
+        if (!folders.has(f.id) && folders.size < MAX_FOLDERS) folders.add(f.id), queue.push(f.id);
+      } else if (BOOK_FILE.test(f.name || '') && +f.size > 0) files.push(f);
+    }
+  }
+  return { files, folders };
+}
+
+/** Part of a file in Drive (bytes a..b), without downloading the rest. */
+async function range(id, a, b) {
+  const res = await drive(`/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { headers: { Range: `bytes=${a}-${b}` } });
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/** A Drive file's content id (the same as the book's on any device), from its first and last 64 KB. */
+async function remoteContentId(f) {
+  const size = +f.size;
+  const head = await range(f.id, 0, Math.min(size, CHUNK) - 1);
+  const tail = size > CHUNK ? await range(f.id, Math.max(CHUNK, size - CHUNK), size - 1) : null;
+  return contentIdOf(size, head, tail);
+}
+
+/** What the library shows for a book found in the folder, until a device opens it and reads its real details. */
+function metaOf(f) {
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  const meta = {
+    title: f.name.replace(/\.(pdf|epub|cbz|cbr)$/i, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Untitled',
+    author: '',
+    pageCount: 0,
+    size: +f.size || 0,
+    fileName: f.name,
+    aspect: ext === 'pdf' ? 0.7 : 0.66,
+    addedAt: Date.parse(f.createdTime) || Date.now(),
+  };
+  if (ext === 'epub') meta.format = 'epub';
+  else if (ext === 'cbz' || ext === 'cbr') meta.format = 'comic';
+  return meta;
+}
+
+const trash = (id) => drive(`/drive/v3/files/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
 
 /**
- * Drive is where the books live: a book whose file was deleted from Drive
- * (or put in the Drive trash), by hand in Drive or anywhere else, leaves
- * the library on every device. Each missing file is confirmed one by one
- * before anything is removed, so a failed or partial answer never empties
- * the library. Runs at most every few minutes.
+ * The library follows the Folio folder in Drive (and the folders inside it):
+ *   - a book file put there by any means (a computer, a phone, the Drive
+ *     app, or Folio) is in the library on every device, without a copy;
+ *   - a book file deleted, put in the trash or moved out of the folder
+ *     leaves the library on every device (downloads included).
+ * Files are recognised by their content (first and last 64 KB, read from
+ * Drive), so a book already on a device is matched, never uploaded twice.
+ * Each missing file is confirmed on its own before anything is removed, so
+ * a failed or partial answer from Drive never empties the library.
+ * Returns how many books came or went.
  */
-export async function removeBooksDeletedInDrive({ force = false } = {}) {
+export async function syncFolder({ force = false } = {}) {
   if (!driveOn() || navigator.onLine === false) return 0;
   let last = 0;
   try {
     last = +localStorage.getItem(CHECKED_KEY) || 0;
   } catch (e) {}
   if (!force && Date.now() - last < CHECK_EVERY) return 0;
+  const { files, folders } = await scanFolder();
+  const alive = new Map(files.map((f) => [f.id, f]));
   const known = await driveCopies();
-  if (!known.length) return 0;
-  // Everything Folio can see in Drive (with drive.file, only its own files), not in the trash.
-  const alive = new Set();
-  let pageToken = '';
-  do {
-    const res = await (await drive(`/drive/v3/files?q=${q('trashed=false')}&fields=${q('nextPageToken,files(id)')}&pageSize=1000${pageToken ? '&pageToken=' + q(pageToken) : ''}`)).json();
-    for (const f of res.files || []) alive.add(f.id);
-    pageToken = res.nextPageToken || '';
-  } while (pageToken);
-  let removed = 0;
+  const knownIds = new Set(known.map((k) => k.copy.id));
+  let changes = 0;
+
+  // New files in the folder.
+  for (const f of files) {
+    if (knownIds.has(f.id)) continue;
+    const sid = await remoteContentId(f);
+    if (!sid) continue;
+    const copy = await driveCopy(sid);
+    // The same book twice in the folder: the first one found stands for it.
+    if (copy && copy.id !== f.id && alive.has(copy.id)) continue;
+    const meta = await itemOf(`b:${sid}:meta`);
+    if (meta && meta.d && (Date.parse(f.createdTime) || 0) <= meta.t) {
+      // Removed from the library from inside Folio; its file just hasn't reached the trash yet.
+      if (!copy || copy.id === f.id) trash(f.id).catch(() => {});
+      continue;
+    }
+    await noteFolderBook(sid, metaOf(f), { id: f.id, size: +f.size, name: f.name });
+    knownIds.add(f.id);
+    changes++;
+  }
+
+  // Files that left the folder.
   for (const { sid, copy } of known) {
     if (alive.has(copy.id)) continue;
-    // Not listed: make sure it's really gone (deleted, or in the trash).
     let gone = false;
     try {
-      const r = await fetch(`${API}/drive/v3/files/${encodeURIComponent(copy.id)}?fields=id,trashed`, { headers: { Authorization: 'Bearer ' + (await accessToken()) } });
-      gone = r.status === 404 || (r.ok && (await r.json()).trashed === true);
+      const r = await fetch(`${API}/drive/v3/files/${encodeURIComponent(copy.id)}?fields=id,trashed,parents`, { headers: { Authorization: 'Bearer ' + (await accessToken()) } });
+      if (r.status === 404) gone = true;
+      else if (r.ok) {
+        const f = await r.json();
+        gone = f.trashed === true || !(f.parents || []).some((p) => folders.has(p));
+      }
     } catch (e) {}
     if (!gone) continue;
     // Off this device, and (by the tombstone) off every other one.
@@ -186,12 +286,12 @@ export async function removeBooksDeletedInDrive({ force = false } = {}) {
     const here = (await listBooks()).filter((b) => b.syncId === sid);
     for (const b of here) await removeBook(b.id);
     if (!here.length) await removeEverywhere(sid);
-    removed++;
+    changes++;
   }
   try {
     localStorage.setItem(CHECKED_KEY, String(Date.now()));
   } catch (e) {}
-  return removed;
+  return changes;
 }
 
 // ---------------------------------------------------------------- downloading
@@ -237,12 +337,12 @@ export function removeCloudBook(sid) {
 // A book removed from the library: its copy goes to the Drive trash (recoverable there for 30 days).
 onRemovedEverywhere((sid, copy) => {
   if (!copy || !driveOn()) return;
-  drive(`/drive/v3/files/${encodeURIComponent(copy.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) })
+  trash(copy.id)
     .then(() => noteDrive(sid, null))
     .catch(() => {});
 });
 
-/** Turn "Keep books in Google Drive" on: Google asks for access (once per account). */
+/** Turn "Library in Google Drive" on: Google asks for access (once per account). */
 export async function connectDrive() {
   const a = account();
   const res = await post('drive/connect', {}, a && a.token);

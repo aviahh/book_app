@@ -23,12 +23,12 @@ const ERRORS = {
 };
 
 const DRIVE_NOTES = {
-  on: 'Google Drive is connected. Your books are being copied to the Folio folder.',
+  on: 'Google Drive is connected. Your library now lives in the “Folio” folder there.',
   cancelled: 'Google Drive wasn’t connected.',
-  denied: 'Google Drive wasn’t connected: Folio needs permission to keep files in its folder.',
+  denied: 'Google Drive wasn’t connected: Folio needs permission to see and keep the books in its folder.',
   account: 'Use the same Google account you’re signed in with.',
 };
-const DRIVE_DESC = 'Copies your books to a “Folio” folder in your own Google Drive, so every device can download them. Folio sees only the files it puts there.';
+const DRIVE_DESC = 'Your library lives in a “Folio” folder in your own Google Drive. Put books there any way you like (from a computer, a phone, or here) and every device has them. Delete one there and it leaves every device. Folio only works inside that folder.';
 
 const row = (title, desc, control, cls = '') =>
   `<div class="set-row${cls}"><div class="set-text"><span class="set-title">${title}</span><span class="set-desc"${desc ? '' : ' hidden'}>${desc}</span></div>${control}</div>`;
@@ -71,9 +71,9 @@ export function mountSyncSettings(group) {
       const quiet = st.error === 'offline' || navigator.onLine === false ? `${when} · offline, changes wait on this device` : st.error && Date.now() - st.lastSync > 3600e3 ? `${when} · couldn’t reach the server` : when;
       html += row(esc(st.email || 'Signed in'), esc(quiet), '<button class="btn subtle" data-sync="out">Sign out</button>');
       html += row(
-        'Keep books in Google Drive',
+        'Library in Google Drive',
         esc(driveNote || DRIVE_DESC),
-        `<button class="switch" role="switch" data-sync="drive" aria-checked="${st.drive}" aria-label="Keep books in Google Drive"><i></i></button>`,
+        `<button class="switch" role="switch" data-sync="drive" aria-checked="${st.drive}" aria-label="Library in Google Drive"><i></i></button>`,
         ' sub sync-drive',
       );
       const live = shownCode && shownCode.until > Date.now();
@@ -93,10 +93,10 @@ export function mountSyncSettings(group) {
         const d = group.querySelector('.sync-drive .set-desc');
         if (!d || !s.total) return;
         d.textContent = s.uploading
-          ? `${s.done} of ${s.total} books in Drive · copying “${s.uploading}”`
+          ? `${s.done} of ${s.total} books in Drive · adding “${s.uploading}”`
           : s.done === s.total
-            ? `All ${s.total} book${s.total === 1 ? '' : 's'} on this device are in your Drive’s Folio folder.`
-            : `${s.done} of ${s.total} books in Drive · the rest follow when online.`;
+            ? `The “Folio” folder in your Drive is your library. Add books there any way you like; every device has them.`
+            : `${s.done} of ${s.total} books on this device are in Drive · the rest follow when online.`;
       });
     }
   }
@@ -189,7 +189,7 @@ export function mountSyncSettings(group) {
         }
         return;
       }
-      if (!confirm('Stop keeping books in Google Drive? Books already there stay in your Drive; devices can still read the ones they have.')) return;
+      if (!confirm('Disconnect Google Drive? The books stay in your Drive’s Folio folder; devices keep the ones they have downloaded.')) return;
       b.disabled = true;
       try {
         await disconnectDrive();

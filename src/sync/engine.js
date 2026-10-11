@@ -381,6 +381,30 @@ export async function noteDrive(sid, v) {
   }
 }
 
+/** One item as sync knows it ({ k, v, t, d }), or null. */
+export async function itemOf(k) {
+  await ready();
+  return items.get(k) || null;
+}
+
+/**
+ * A book file found in the Drive library folder: it is in the library
+ * (again, if it had been removed and is back), and this is its file.
+ */
+export async function noteFolderBook(sid, meta, copy) {
+  await ready();
+  const out = [];
+  const m = items.get(`b:${sid}:meta`);
+  if (!m || m.d) out.push(note(`b:${sid}:meta`, meta));
+  const r = note(`b:${sid}:drive`, copy);
+  if (r) out.push(r);
+  const recs = out.filter(Boolean);
+  if (recs.length) {
+    await saveItems(recs);
+    changed();
+  }
+}
+
 /** Every book the account has a copy of in Drive: [{ sid, copy: { id, size } }]. */
 export async function driveCopies() {
   await ready();

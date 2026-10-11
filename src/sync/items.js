@@ -15,12 +15,21 @@
 //   st:<device>:<day> seconds read that day on that device
 
 /** Content id of a book file: size plus its first and last 64 KB. null where hashing isn't available (plain-http address). */
+export const CHUNK = 65536;
+
 export async function contentId(blob) {
-  if (!(window.crypto && crypto.subtle) || !blob) return null;
+  if (!blob) return null;
   const size = blob.size;
-  const CHUNK = 65536;
-  const parts = [new TextEncoder().encode(`folio1|${size}|`), new Uint8Array(await blob.slice(0, CHUNK).arrayBuffer())];
-  if (size > CHUNK) parts.push(new Uint8Array(await blob.slice(Math.max(CHUNK, size - CHUNK)).arrayBuffer()));
+  const head = new Uint8Array(await blob.slice(0, CHUNK).arrayBuffer());
+  const tail = size > CHUNK ? new Uint8Array(await blob.slice(Math.max(CHUNK, size - CHUNK)).arrayBuffer()) : null;
+  return contentIdOf(size, head, tail);
+}
+
+/** The same id from the file's size, its first 64 KB and (if bigger) its last 64 KB, e.g. read from Drive without downloading the rest. */
+export async function contentIdOf(size, head, tail) {
+  if (!(window.crypto && crypto.subtle)) return null;
+  const parts = [new TextEncoder().encode(`folio1|${size}|`), head];
+  if (tail) parts.push(tail);
   const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let at = 0;
   for (const p of parts) {
