@@ -8,6 +8,7 @@
 // read: everything is saved on the device first.
 
 import { account, setAccount, forgetAccount, syncNow, watchLocal, deviceName, post, onRemoteBook } from './engine.js';
+import { keepBooksInDrive } from './drive.js';
 
 const listeners = new Set();
 let state = { busy: false };
@@ -40,6 +41,7 @@ export function status() {
     error: (a && a.error) || null,
     busy: state.busy,
     signingIn: !!pendingCode,
+    drive: !!(a && a.token && a.drive),
   };
 }
 
@@ -61,6 +63,8 @@ export async function runSync() {
     state.busy = false;
     emit();
   }
+  // Books not in Drive yet go up in the background (when that's on).
+  keepBooksInDrive().then(emit);
 }
 
 function soon(ms = AFTER_CHANGE) {
@@ -80,7 +84,9 @@ export function startSync() {
   // Back from Google: take the one-time code out of the address (it is used once, here).
   const m = /[?&]signin=([\w-]+)/.exec(location.hash);
   const err = /[?&]signin_error=(\w+)/.exec(location.hash);
-  if (m || err) {
+  const drive = /[?&]drive(_error)?=(\w+)/.exec(location.hash);
+  if (drive) state.driveNote = drive[1] ? drive[2] : 'on';
+  if (m || err || drive) {
     try {
       history.replaceState(history.state, '', '#/settings');
     } catch (e) {}
@@ -101,8 +107,15 @@ export function startSync() {
       emit();
     });
   } else if (status().signedIn) {
-    soon(1500);
+    soon(drive ? 200 : 1500);
   }
+}
+
+/** What happened when coming back from allowing Drive ('on', 'cancelled', 'account', 'denied'), once. */
+export function takeDriveNote() {
+  const n = state.driveNote;
+  state.driveNote = null;
+  return n || null;
 }
 
 /** The last sign-in problem (shown once in Settings), then forgotten. */

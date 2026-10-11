@@ -8,6 +8,8 @@
 //   b:<sid>:series   { name, index } once set by hand
 //   b:<sid>:stop     "Where I stopped"
 //   b:<sid>:bm:<n>   bookmark on page n, with its note
+//   b:<sid>:cover    a small cover picture (for books not on this device)
+//   b:<sid>:drive    { id, size } of its copy in the account's Google Drive
 //   s:<setting>      one setting
 //   st:<device>:<day> seconds read that day on that device
 
@@ -97,6 +99,31 @@ export function bookItems(book) {
   return out;
 }
 
+/** A small JPEG of a cover (as a data: address), for showing books that aren't on this device. */
+export function coverThumb(blob, width = 120) {
+  return new Promise((resolve) => {
+    if (!blob) return resolve(null);
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = width;
+        c.height = Math.max(1, Math.round((img.naturalHeight / img.naturalWidth) * width));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        const data = c.toDataURL('image/jpeg', 0.72);
+        c.width = c.height = 0;
+        resolve(data.length < 14000 ? data : null);
+      } catch (e) {
+        resolve(null);
+      }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => (URL.revokeObjectURL(url), resolve(null));
+    img.src = url;
+  });
+}
+
 /** Are two values of this item the same, for sync's purposes? */
 export function sameValue(k, a, b) {
   if (/:prog$/.test(k) && a && b) return a.lastPage === b.lastPage && a.readingPos === b.readingPos && !!a.finished === !!b.finished;
@@ -130,7 +157,7 @@ function keep(patch, pairs) {
 
 /** Split a key into its parts: { kind: 'book' | 'setting' | 'stats', sid, field, page, … }. */
 export function parseKey(k) {
-  let m = /^b:([0-9a-f]+):(meta|prog|series|stop)$/.exec(k);
+  let m = /^b:([0-9a-f]+):(meta|prog|series|stop|cover|drive)$/.exec(k);
   if (m) return { kind: 'book', sid: m[1], field: m[2] };
   m = /^b:([0-9a-f]+):bm:(\d+|e\d+\.\d+)$/.exec(k);
   if (m) return { kind: 'book', sid: m[1], field: 'bm', pos: /^\d+$/.test(m[2]) ? +m[2] : m[2] };

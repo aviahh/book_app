@@ -54,3 +54,44 @@
     transform: rotate(360deg);
   }
 }
+
+/* Library: a book that's in Google Drive, not on this device. */
+.badge.cloud {
+  top: auto;
+  bottom: 8px;
+  left: 8px;
+  right: auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: rgba(22, 20, 17, 0.62);
+  color: #f3ead9;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.badge.cloud svg {
+  width: 17px;
+  height: 17px;
+}
+.card.is-cloud .book3d img {
+  filter: saturate(0.82);
+}
+.menu [data-m] svg {
+  vertical-align: middle;
+}
+.sync-bar {
+  height: 3px;
+  margin-top: 14px;
+  border-radius: 2px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+.sync-bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}

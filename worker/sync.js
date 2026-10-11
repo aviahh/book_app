@@ -130,6 +130,93 @@ async function upsertUser(env, sub, email) {
   return id;
 }
 
+// ---------------------------------------------------------------- Drive grant (stored encrypted)
+
+async function grantKey(env) {
+  if (!env.TOKEN_KEY) throw new Error('TOKEN_KEY is not set');
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode('folio-grant:' + env.TOKEN_KEY));
+  return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function sealGrant(env, refreshToken) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await grantKey(env), enc.encode(refreshToken)));
+  const all = new Uint8Array(12 + ct.length);
+  all.set(iv);
+  all.set(ct, 12);
+  return 'v1.' + b64url(all);
+}
+
+async function openGrant(env, sealed) {
+  const s = sealed.slice(3).replace(/-/g, '+').replace(/_/g, '/');
+  const all = Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: all.slice(0, 12) }, await grantKey(env), all.slice(12));
+  return new TextDecoder().decode(pt);
+}
+
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+/** Start giving Folio access to its own folder in the account's Google Drive. */
+async function driveConnect(url, dev, env) {
+  if (env.DEV_LOGIN === '1' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')) {
+    await env.DB.prepare(`UPDATE users SET grant_enc = 'dev' WHERE id = ?`).bind(dev.userId).run();
+    return json({ url: '/#/settings?drive=on' });
+  }
+  if (!env.GOOGLE_CLIENT_ID) return fail(503, 'Google Drive is not set up yet.');
+  const state = await putCode(env, 'state', 15, { data: JSON.stringify({ drive: dev.userId }) });
+  const q = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID,
+    redirect_uri: callbackUrl(url),
+    response_type: 'code',
+    scope: `openid email ${DRIVE_SCOPE}`,
+    state,
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    login_hint: dev.email || '',
+  });
+  return json({ url: `${GOOGLE_AUTH}?${q}` });
+}
+
+/** A short-lived Drive access token for this account (the app talks to Drive itself). */
+async function driveToken(dev, env) {
+  const row = await env.DB.prepare(`SELECT grant_enc FROM users WHERE id = ?`).bind(dev.userId).first();
+  if (!row || !row.grant_enc) return fail(409, 'no-drive');
+  if (row.grant_enc === 'dev' && env.DEV_LOGIN === '1') return json({ token: 'dev-token', expiresIn: 3600 });
+  const res = await fetch(GOOGLE_TOKEN, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      refresh_token: await openGrant(env, row.grant_enc),
+      grant_type: 'refresh_token',
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    // Access was withdrawn in the Google account: forget it, so the switch shows off.
+    if (data.error === 'invalid_grant') {
+      await env.DB.prepare(`UPDATE users SET grant_enc = NULL WHERE id = ?`).bind(dev.userId).run();
+      return fail(409, 'no-drive');
+    }
+    return fail(502, 'Google didn’t answer');
+  }
+  return json({ token: data.access_token, expiresIn: data.expires_in || 3600 });
+}
+
+async function driveDisconnect(dev, env) {
+  const row = await env.DB.prepare(`SELECT grant_enc FROM users WHERE id = ?`).bind(dev.userId).first();
+  if (row && row.grant_enc && row.grant_enc !== 'dev') {
+    try {
+      const token = await openGrant(env, row.grant_enc);
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: 'POST' });
+    } catch (e) {}
+  }
+  await env.DB.prepare(`UPDATE users SET grant_enc = NULL WHERE id = ?`).bind(dev.userId).run();
+  return json({ ok: true });
+}
+
 // ---------------------------------------------------------------- Google sign-in
 
 const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -159,7 +246,7 @@ async function googleCallback(url, env) {
   const back = (hash) => Response.redirect(`${url.origin}/#/settings?${hash}`, 302);
   const st = await takeCode(env, 'state', url.searchParams.get('state') || '');
   if (!st) return back('signin_error=expired');
-  if (url.searchParams.get('error') || !url.searchParams.get('code')) return back('signin_error=cancelled');
+  if (url.searchParams.get('error') || !url.searchParams.get('code')) return back(st.data && st.data.indexOf('"drive"') >= 0 ? 'drive_error=cancelled' : 'signin_error=cancelled');
   const res = await fetch(GOOGLE_TOKEN, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -182,8 +269,16 @@ async function googleCallback(url, env) {
     return back('signin_error=google');
   }
   if (claims.aud !== env.GOOGLE_CLIENT_ID || !claims.sub || claims.email_verified === false) return back('signin_error=google');
+  const asked = JSON.parse(st.data || '{}');
+  if (asked.drive) {
+    // Back from allowing Drive: only for the same Google account that is signed in.
+    if ((await userIdFor(claims.sub)) !== asked.drive) return back('drive_error=account');
+    if (!tok.refresh_token || !String(tok.scope || '').includes(DRIVE_SCOPE)) return back('drive_error=denied');
+    await env.DB.prepare(`UPDATE users SET grant_enc = ? WHERE id = ?`).bind(await sealGrant(env, tok.refresh_token), asked.drive).run();
+    return back('drive=on');
+  }
   const userId = await upsertUser(env, claims.sub, claims.email || '');
-  const name = JSON.parse(st.data || '{}').name || '';
+  const name = asked.name || '';
   const code = await putCode(env, 'login', 5, { userId, data: JSON.stringify({ name }) });
   return back(`signin=${code}`);
 }
@@ -298,7 +393,8 @@ async function sync(request, dev, env) {
     if (x.rev === rev && x.dev === devId && changes.length) continue; // its own changes, just sent
     out.push(x.deleted ? { k: x.k, t: x.t, d: 1 } : { k: x.k, t: x.t, v: x.v == null ? null : JSON.parse(x.v) });
   }
-  return json({ rev: upTo, now, changes: out, more, email: dev.email });
+  const g = await db.prepare(`SELECT grant_enc FROM users WHERE id = ?`).bind(dev.userId).first();
+  return json({ rev: upTo, now, changes: out, more, email: dev.email, drive: !!(g && g.grant_enc) });
 }
 
 // ---------------------------------------------------------------- router
@@ -307,7 +403,7 @@ async function sync(request, dev, env) {
 export async function handleSync(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
-  if (!/^\/api\/(auth|pair|sync)(\/|$)/.test(path)) return null;
+  if (!/^\/api\/(auth|pair|sync|drive)(\/|$)/.test(path)) return null;
   if (!env.DB) return fail(503, 'Sync is not set up yet.');
   await ensureSchema(env.DB);
 
@@ -330,5 +426,8 @@ export async function handleSync(request, env) {
   if (path === '/api/sync') return sync(request, dev, env);
   if (path === '/api/pair/create') return pairCreate(dev, env);
   if (path === '/api/auth/signout') return signOut(dev, env);
+  if (path === '/api/drive/connect') return driveConnect(url, dev, env);
+  if (path === '/api/drive/token') return driveToken(dev, env);
+  if (path === '/api/drive/disconnect') return driveDisconnect(dev, env);
   return fail(404, 'Not found');
 }

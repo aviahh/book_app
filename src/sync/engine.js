@@ -9,7 +9,7 @@
 import { listBooks, getBook, getBookFile, updateBook, removeBook, onBooksChange } from '../db.js';
 import { getSettings, setSetting, onSettingsChange, DEFAULTS } from '../settings.js';
 import { loadItems, saveItems, clearItems } from './store.js';
-import { contentId, bookItems, sameValue, parseKey, patchFor } from './items.js';
+import { contentId, bookItems, sameValue, parseKey, patchFor, coverThumb } from './items.js';
 
 const ACCOUNT_KEY = 'folio.sync.v1';
 const DEVICE_KEY = 'folio.device.v1';
@@ -167,10 +167,16 @@ async function scanBook(book, { seeded = false, added = false } = {}) {
     const r = note(it.k, it.v, seeded || added ? { t: it.seed } : {});
     if (r) out.push(r);
   }
+  // A small cover, for devices that don't have the book (yet).
+  const ck = `b:${sid}:cover`;
+  if (book.cover && !items.has(ck)) {
+    const thumb = await coverThumb(book.cover);
+    if (thumb) out.push(note(ck, thumb, { t: book.addedAt || 0 }));
+  }
   // Items that are gone from the book (bookmark removed, mark cleared …).
   const prefix = `b:${sid}:`;
   for (const cur of items.values()) {
-    if (cur.k.indexOf(prefix) !== 0 || seen.has(cur.k) || cur.d || /:meta$/.test(cur.k)) continue;
+    if (cur.k.indexOf(prefix) !== 0 || seen.has(cur.k) || cur.d || /:(meta|cover|drive)$/.test(cur.k)) continue;
     if ((seeded || added) && !cur.dirty) {
       remote[cur.k] = cur; // known on the server, not here yet: bring it in
       continue;
@@ -330,16 +336,72 @@ async function onLocalBook(e) {
   if (e.type === 'remove') {
     const sid = known[e.id];
     remember(e.id, null);
-    if (!sid || Object.keys(known).some((id) => known[id] === sid)) return;
-    const r = note(`b:${sid}:meta`, null, { d: 1 });
-    if (r) await saveItems([r]);
-    return changed();
+    // "Remove download" only takes the file off this device; the book stays in the library.
+    if (e.source === 'download' || !sid || Object.keys(known).some((id) => known[id] === sid)) return;
+    return removeEverywhere(sid);
   }
   const book = await getBook(e.id);
   if (!book) return;
   const recs = await scanBook(book, { added: e.type === 'add' });
   await saveItems(recs);
   if (recs.length) changed();
+}
+
+const removedListeners = new Set();
+
+/** Remove a book from the library on every device (a tombstone; its progress stays known). */
+export async function removeEverywhere(sid) {
+  await ready();
+  const r = note(`b:${sid}:meta`, null, { d: 1 });
+  if (r) await saveItems([r]);
+  const drive = items.get(`b:${sid}:drive`);
+  for (const fn of removedListeners) {
+    try {
+      fn(sid, drive && !drive.d ? drive.v : null);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  changed();
+}
+
+/** Hear books removed from the library here (fn(sid, driveCopy)), e.g. to move the Drive copy to the trash. */
+export function onRemovedEverywhere(fn) {
+  removedListeners.add(fn);
+  return () => removedListeners.delete(fn);
+}
+
+/** Record where a book's copy is in Drive (or that it's gone: null). */
+export async function noteDrive(sid, v) {
+  await ready();
+  const r = v ? note(`b:${sid}:drive`, v) : note(`b:${sid}:drive`, null, { d: 1 });
+  if (r) {
+    await saveItems([r]);
+    changed();
+  }
+}
+
+export async function driveCopy(sid) {
+  await ready();
+  const it = items.get(`b:${sid}:drive`);
+  return it && !it.d ? it.v : null;
+}
+
+/**
+ * Books in the library that aren't on this device but have a copy in Drive:
+ * [{ sid, meta, prog, series, cover, drive }].
+ */
+export async function cloudBooks() {
+  await ready();
+  const here = new Set((await listBooks()).map((b) => b.syncId).filter(Boolean));
+  const by = new Map();
+  for (const it of items.values()) {
+    const p = parseKey(it.k);
+    if (p.kind !== 'book' || p.field === 'bm' || it.d || here.has(p.sid)) continue;
+    if (!by.has(p.sid)) by.set(p.sid, { sid: p.sid });
+    by.get(p.sid)[p.field] = it.v;
+  }
+  return [...by.values()].filter((x) => x.meta && x.drive);
 }
 
 async function onLocalSetting(s, key) {
@@ -436,7 +498,7 @@ async function exchange(a, dirty, dev) {
     since = res.rev;
     const cur = account();
     if (!cur || cur.token !== a.token) return; // signed out meanwhile
-    saveAccount(Object.assign(cur, { since, offset, email: res.email || cur.email }));
+    saveAccount(Object.assign(cur, { since, offset, email: res.email || cur.email, drive: !!res.drive }));
     if (!res.more) return;
     send = [];
   }

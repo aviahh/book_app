@@ -1,6 +1,7 @@
 // The Sync section in Settings: one quiet group of rows.
 import './sync.css';
-import { status, onSyncStatus, runSync, signInWithGoogle, linkWithCode, makeLinkCode, signOut, takeSigninError } from './index.js';
+import { status, onSyncStatus, runSync, signInWithGoogle, linkWithCode, makeLinkCode, signOut, takeSigninError, takeDriveNote } from './index.js';
+import { connectDrive, disconnectDrive, driveSummary, onDriveProgress } from './drive.js';
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -20,6 +21,14 @@ const ERRORS = {
   google: 'Google didn’t confirm the sign-in. Please try again.',
 };
 
+const DRIVE_NOTES = {
+  on: 'Google Drive is connected. Your books are being copied to the Folio folder.',
+  cancelled: 'Google Drive wasn’t connected.',
+  denied: 'Google Drive wasn’t connected: Folio needs permission to keep files in its folder.',
+  account: 'Use the same Google account you’re signed in with.',
+};
+const DRIVE_DESC = 'Copies your books to a “Folio” folder in your own Google Drive, so every device can download them. Folio sees only the files it puts there.';
+
 const row = (title, desc, control, cls = '') =>
   `<div class="set-row${cls}"><div class="set-text"><span class="set-title">${title}</span><span class="set-desc"${desc ? '' : ' hidden'}>${desc}</span></div>${control}</div>`;
 
@@ -32,6 +41,10 @@ export function mountSyncSettings(group) {
   let entering = false; // typing a link code
   let shownCode = null; // { code, until } on a signed-in device
   let linkError = '';
+  let driveNote = (() => {
+    const n = takeDriveNote();
+    return n ? DRIVE_NOTES[n] || DRIVE_NOTES.cancelled : '';
+  })();
 
   function draw() {
     const st = status();
@@ -56,6 +69,12 @@ export function mountSyncSettings(group) {
       const when = st.busy && !st.lastSync ? 'Syncing…' : st.lastSync ? `Synced ${ago(st.lastSync)}` : 'Not synced yet';
       const quiet = st.error === 'offline' || navigator.onLine === false ? `${when} · offline, changes wait on this device` : st.error && Date.now() - st.lastSync > 3600e3 ? `${when} · couldn’t reach the server` : when;
       html += row(esc(st.email || 'Signed in'), esc(quiet), '<button class="btn subtle" data-sync="out">Sign out</button>');
+      html += row(
+        'Keep books in Google Drive',
+        esc(driveNote || DRIVE_DESC),
+        `<button class="switch" role="switch" data-sync="drive" aria-checked="${st.drive}" aria-label="Keep books in Google Drive"><i></i></button>`,
+        ' sub sync-drive',
+      );
       const live = shownCode && shownCode.until > Date.now();
       html += row(
         'Link a device',
@@ -67,6 +86,17 @@ export function mountSyncSettings(group) {
     group.innerHTML = html;
     const input = group.querySelector('.sync-input');
     if (input) input.focus();
+    if (st.drive && !driveNote) {
+      driveSummary().then((s) => {
+        const d = group.querySelector('.sync-drive .set-desc');
+        if (!d || !s.total) return;
+        d.textContent = s.uploading
+          ? `${s.done} of ${s.total} books in Drive · copying “${s.uploading}”`
+          : s.done === s.total
+            ? `All ${s.total} book${s.total === 1 ? '' : 's'} on this device are in your Drive’s Folio folder.`
+            : `${s.done} of ${s.total} books in Drive · the rest follow when online.`;
+      });
+    }
   }
 
   group.addEventListener('click', async (e) => {
@@ -88,6 +118,28 @@ export function mountSyncSettings(group) {
       if (!confirm('Sign out on this device? Your books and progress stay here; this device just stops syncing.')) return;
       b.disabled = true;
       await signOut();
+    } else if (act === 'drive') {
+      driveNote = '';
+      if (b.getAttribute('aria-checked') !== 'true') {
+        if (navigator.onLine === false) {
+          driveNote = 'You’re offline. Connect to the internet to turn this on.';
+          return draw();
+        }
+        b.disabled = true;
+        try {
+          await connectDrive();
+        } catch (err) {
+          driveNote = 'Couldn’t reach Google Drive. Please try again.';
+          draw();
+        }
+        return;
+      }
+      if (!confirm('Stop keeping books in Google Drive? Books already there stay in your Drive; devices can still read the ones they have.')) return;
+      b.disabled = true;
+      try {
+        await disconnectDrive();
+      } catch (err) {}
+      draw();
     } else if (act === 'code') {
       b.disabled = true;
       try {
@@ -125,9 +177,11 @@ export function mountSyncSettings(group) {
     if (!group.querySelector('.sync-input')) draw(); // don't redraw away a code being typed
   };
   const off = onSyncStatus(update);
+  const offDrive = onDriveProgress(update);
   const tick = setInterval(update, 30000);
   const stop = () => {
     off();
+    offDrive();
     clearInterval(tick);
   };
   draw();
