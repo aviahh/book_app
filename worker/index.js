@@ -32,7 +32,30 @@ const jsDate = () => new Date().toUTCString().replace('GMT', 'GMT+0000 (Coordina
 
 const escapeXml = (s) => s.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
 
+// The voice service turns away a large share of connections at random (a 403
+// before any audio; often several in a row), and a moment later accepts the
+// same request. So each request is tried again, after a short pause, until
+// audio starts to arrive. Once it has, a failure is passed on as is (the
+// listener never hears the start twice).
+const RETRY_DELAYS = [150, 250, 400, 600, 900, 900, 900, 900];
+const FIRST_AUDIO_MS = 10000;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function tts(text, voice, rate) {
+  let lastErr;
+  for (let i = 0; i <= RETRY_DELAYS.length; i++) {
+    if (i) await wait(RETRY_DELAYS[i - 1]);
+    try {
+      return await attempt(text, voice, rate);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  return new Response(`Voice service unavailable (${lastErr.message})`, { status: 502 });
+}
+
+/** One connection to the voice service; resolves with the audio stream once its first bytes arrive. */
+async function attempt(text, voice, rate) {
   const url =
     `${WSS_BASE}?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&ConnectionId=${uuid()}` +
     `&Sec-MS-GEC=${await secMsGec()}&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}`;
@@ -48,20 +71,34 @@ async function tts(text, voice, rate) {
     },
   });
   const ws = upstream.webSocket;
-  if (!ws) return new Response(`Voice service refused the connection (${upstream.status})`, { status: 502 });
+  if (!ws) throw new Error(`refused: ${upstream.status}`);
   ws.accept();
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
+  let started = false;
+  let begin;
+  let fail;
+  const firstAudio = new Promise((resolve, reject) => {
+    begin = resolve;
+    fail = reject;
+  });
   let done = false;
   const finish = (err) => {
     if (done) return;
     done = true;
+    clearTimeout(timer);
     try {
       ws.close(1000);
     } catch {}
+    if (!started) {
+      // Nothing sent yet: this attempt failed and the caller tries again.
+      writer.abort(err).catch(() => {});
+      return fail(err || new Error('no audio'));
+    }
     (err ? writer.abort(err) : writer.close()).catch(() => {});
   };
+  const timer = setTimeout(() => finish(new Error('no audio in time')), FIRST_AUDIO_MS);
 
   // Messages are processed strictly in order (binary frames may arrive as Blobs).
   let queue = Promise.resolve();
@@ -78,7 +115,13 @@ async function tts(text, voice, rate) {
       const header = new TextDecoder().decode(bytes.subarray(2, 2 + headerLen));
       if (!header.includes('Path:audio')) return;
       const audio = bytes.subarray(2 + headerLen);
-      if (audio.length && !done) await writer.write(audio).catch(() => finish());
+      if (!audio.length || done) return;
+      if (!started) {
+        started = true;
+        clearTimeout(timer);
+        begin();
+      }
+      await writer.write(audio).catch(() => finish());
     });
   });
   ws.addEventListener('close', () => (queue = queue.then(() => finish())));
@@ -94,6 +137,7 @@ async function tts(text, voice, rate) {
     `<voice name='${voice}'><prosody pitch='+0Hz' rate='${rate}' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
   ws.send(`X-RequestId:${uuid()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${jsDate()}Z\r\nPath:ssml\r\n\r\n${ssml}`);
 
+  await firstAudio;
   return new Response(readable, {
     headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=3600' },
   });
