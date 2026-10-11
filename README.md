@@ -59,3 +59,22 @@ the device's built-in voice when Google can't be reached.
 - `src/views/` — Reading Room, Library, Settings
 - `reference/` — the design reference images
 - `samples/` — a generated sample PDF for testing
+
+## Sync (optional)
+
+Settings › Sync. Without an account nothing changes: Folio works fully on the device, offline.
+
+- **Across your devices:** reading place, bookmarks with notes, "Where I stopped", series, settings and reading time. Sign in with Google, or **Link a device** with a 6-character code from a device that is already signed in (handy on the iOS 12 home-screen app). Each item merges on its own; the newer change wins; removals reach the other devices. Books match by their content, whatever the file is called; EPUB places travel as the text they point at, since pages differ per screen. An open book never jumps: a newer place shows as **Continue at p. N**.
+- **Books in your own Google Drive:** **Keep books in Google Drive** copies your books into a "Folio" folder in your Drive (Folio can only see files it put there). Other devices show them with a small cloud mark and download one when you open it. **Remove download** frees the space on one device and keeps the book and your progress.
+- **Family library:** **Share** gives a code; whoever adds it can read the books in your Drive (streamed from it, never copied to their Drive), with their own progress.
+
+Code: `src/sync/` (engine, items, Drive, family, Settings section) and `worker/sync.js` (accounts, `/api/sync`, Drive grant, family). Data lives in Cloudflare D1, one row per item.
+
+### One-time setup (Cloudflare and Google)
+
+1. Create the database and put its id in `wrangler.jsonc` (`d1_databases[0].database_id`):
+   `npx wrangler d1 create folio-sync`. The Worker creates its tables itself.
+2. Google Cloud Console: a project with the **Google Drive API** enabled; OAuth consent screen (External, scopes `openid`, `email`, `drive.file`), **published** (In production); an OAuth client of type **Web application** with the redirect URI `https://<your-worker>/api/auth/google/callback`.
+3. Worker secrets (Cloudflare dashboard › the Worker › Settings › Variables and Secrets): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `TOKEN_KEY` (any long random string; it encrypts the stored Drive access).
+
+Local testing: `.dev.vars` with `DEV_LOGIN=1` enables `/api/auth/dev?email=…` (sign in without Google) and a stand-in Drive grant, on localhost only.

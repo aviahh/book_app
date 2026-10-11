@@ -155,7 +155,7 @@ export async function mountSettings(view, _p, nav) {
 
       <h2>About</h2>
       <div class="set-group">
-        ${row('Folio', 'Books stay on this device. Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
+        ${row('Folio', 'Books stay on this device, unless you keep them in Google Drive (Sync). Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
         ${storage ? row('Storage', storage, '') : ''}
         ${row('Reset preferences', '', '<button class="btn subtle" data-act="reset">Reset</button>')}
         ${row('Relaunch Folio', `Closes and reopens the app, picking up the newest version if there is one. Version: ${buildLabel()}.`, '<button class="btn subtle" data-act="relaunch">Relaunch</button>')}
