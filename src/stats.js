@@ -35,8 +35,18 @@ export function trackReading(isActive) {
   };
 }
 
-export function readingStats() {
+/** This device's reading time plus other devices' (from sync), per day. */
+function allDevices() {
   const s = load();
+  try {
+    const others = JSON.parse(localStorage.getItem('folio.stats.others.v1') || '{}');
+    for (const day of Object.keys(others)) s[day] = (s[day] || 0) + (others[day] || 0);
+  } catch {}
+  return s;
+}
+
+export function readingStats() {
+  const s = allDevices();
   const today = Math.round((s[dayKey()] || 0) / 60);
   let streak = 0;
   const d = new Date();

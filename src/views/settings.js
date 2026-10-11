@@ -2,6 +2,7 @@ import { getSettings, setSetting, onSettingsChange, LANGUAGES, DEFAULTS } from '
 import { icons } from '../icons.js';
 import { shell, esc, toast } from './common.js';
 import { backupSizes, createBackup, backupFileName, restoreBackup } from '../backup.js';
+import { mountSyncSettings } from '../sync/ui.js';
 
 export async function mountSettings(view, _p, nav) {
   const content = shell(view, 'settings');
@@ -134,6 +135,9 @@ export async function mountSettings(view, _p, nav) {
         ${row('Language', 'Automatic detects it from the text itself.', select('speechLang', [['auto', 'Automatic'], ...LANGUAGES]), { sub: true })}
       </div>
 
+      <h2>Sync</h2>
+      <div class="set-group" data-sync-group></div>
+
       <h2>Backup</h2>
       <div class="set-group">
         ${row('What to back up', 'Progress only: your library list, reading progress, statistics and settings. With books: the book files as well.', `
@@ -151,12 +155,14 @@ export async function mountSettings(view, _p, nav) {
 
       <h2>About</h2>
       <div class="set-group">
-        ${row('Folio', 'Books stay on this device. Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
+        ${row('Folio', 'Books stay on this device, unless you keep them in Google Drive (Sync). Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
         ${storage ? row('Storage', storage, '') : ''}
         ${row('Reset preferences', '', '<button class="btn subtle" data-act="reset">Reset</button>')}
         ${row('Relaunch Folio', `Closes and reopens the app, picking up the newest version if there is one. Version: ${buildLabel()}.`, '<button class="btn subtle" data-act="relaunch">Relaunch</button>')}
       </div>
     </section>`;
+
+  mountSyncSettings(content.querySelector('[data-sync-group]'));
 
   // Keep dependent rows in step with the settings they depend on.
   const refresh = () => {

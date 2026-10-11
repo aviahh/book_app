@@ -12,5 +12,13 @@
     "not_found_handling": "single-page-application",
     // Only /api/* reaches the Worker; everything else is plain static files.
     "run_worker_first": ["/api/*"]
-  }
+  },
+  // Sync data (reading progress, bookmarks, settings …). Tables are created by the Worker itself.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "folio-sync",
+      "database_id": "5d89bc6a-a952-4462-827f-a6cc654b3f3b"
+    }
+  ]
 }

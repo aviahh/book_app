@@ -2,6 +2,7 @@ import { listBooks, removeBook, updateBook } from '../db.js';
 import { icons } from '../icons.js';
 import { groupSeries, seriesOf, volumeLabel } from '../series.js';
 import { shell, esc, coverUrls, progressOf, addBooksFlow, enableDrop, toast } from './common.js';
+import { cloudLibrary, inDrive, cloudIcon, openCloudBook, cloudMenu, cloudMenuAction, familyLibraries, familyShelves, mountFamilyPage, askRemove } from '../sync/library.js';
 
 const latest = (b) => b.lastOpenedAt || b.addedAt || 0;
 
@@ -20,10 +21,15 @@ export async function mountLibrary(view, _params, nav) {
   const covers = coverUrls();
   // A series shelf opened on its own page: #/library?series=<key>
   const seriesKey = new URLSearchParams(location.hash.split('?')[1] || '').get('series');
+  // A family library (shared with this account): #/library?family=<owner>
+  const familyKey = new URLSearchParams(location.hash.split('?')[1] || '').get('family');
+  if (familyKey) return mountFamilyPage(content, familyKey, view, nav, toast);
   let sort = sessionStorage.getItem('folio.sort') || 'recent';
   let query = '';
   let books = [];
   let groups = [];
+  let driveCopies = new Set(); // local books that also have a copy in Google Drive
+  let families = []; // family libraries shared with this account
 
   content.innerHTML = seriesKey
     ? `
@@ -62,6 +68,12 @@ export async function mountLibrary(view, _params, nav) {
 
   async function load() {
     books = await listBooks();
+    // Books in Google Drive that aren't on this device (sync).
+    try {
+      driveCopies = await inDrive(books);
+      books = books.concat(await cloudLibrary());
+      if (!seriesKey) families = await familyLibraries();
+    } catch (e) {}
     groups = groupSeries(books).groups;
     await covers.load(books);
     draw();
@@ -73,11 +85,12 @@ export async function mountLibrary(view, _params, nav) {
     const p = progressOf(b);
     const badge = b.finished ? '<span class="badge done">Finished</span>' : !b.lastOpenedAt ? '<span class="badge new">New</span>' : '';
     return `
-        <article class="card" data-id="${b.id}">
+        <article class="card${b.cloud ? ' is-cloud' : ''}" data-id="${b.id}">
           <a class="card-cover" href="#/read/${b.id}" aria-label="Open ${esc(b.title)}">
             <span class="book3d" style="--ar:${b.aspect || 0.7}"><img src="${covers.get(b)}" alt="" loading="lazy"></span>
             ${vol ? `<span class="badge vol">${esc(vol)}</span>` : ''}
             ${badge}
+            ${b.cloud ? `<span class="badge cloud" title="In Google Drive · tap to download">${cloudIcon}</span>` : ''}
           </a>
           <div class="card-info">
             <div class="card-text">
@@ -122,7 +135,7 @@ export async function mountLibrary(view, _params, nav) {
     content.querySelector('.lib-count').textContent = books.length
       ? `${books.length} book${books.length === 1 ? '' : 's'}${groups.length ? ` · ${groups.length} series` : ''} · ${books.filter((b) => b.finished).length} finished`
       : '';
-    if (!books.length) {
+    if (!books.length && !families.length) {
       grid.innerHTML = `
         <div class="lib-empty">
           <div class="welcome-art" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -146,11 +159,11 @@ export async function mountLibrary(view, _params, nav) {
       items = [...groups.map(groupItem), ...singles.map(bookItem)];
     }
     items.sort(SORTS[sort]);
-    if (!items.length) {
+    if (!items.length && (q || !families.length)) {
       grid.innerHTML = `<p class="no-results">Nothing matches “${esc(query)}”.</p>`;
       return;
     }
-    grid.innerHTML = items.map((it) => (it.group ? seriesCard(it.group) : bookCard(it.book))).join('');
+    grid.innerHTML = items.map((it) => (it.group ? seriesCard(it.group) : bookCard(it.book))).join('') + (q ? '' : familyShelves(families));
   }
 
   function drawSeries() {
@@ -174,7 +187,10 @@ export async function mountLibrary(view, _params, nav) {
     const menu = document.createElement('div');
     menu.className = 'menu';
     menu.setAttribute('role', 'menu');
-    menu.innerHTML = `
+    menu.innerHTML = b.cloud
+      ? cloudMenu(b, false, icons)
+      : `
+      ${cloudMenu(b, driveCopies.has(b.id), icons)}
       <button role="menuitem" data-m="finish">${icons.check} ${b.finished ? 'Mark as unread' : 'Mark as finished'}</button>
       <button role="menuitem" data-m="series">${icons.library} ${inSeries ? 'Series and volume…' : 'Add to a series…'}</button>
       ${inSeries ? `<button role="menuitem" data-m="unseries">${icons.close} Remove from series</button>` : ''}
@@ -184,6 +200,16 @@ export async function mountLibrary(view, _params, nav) {
       const m = e.target.closest('[data-m]')?.dataset.m;
       if (!m) return;
       closeMenu();
+      try {
+        const said = await cloudMenuAction(m, b, view, nav);
+        if (said != null) {
+          if (said) toast(view, said);
+          return await load();
+        }
+      } catch (err) {
+        toast(view, err.message || 'Something went wrong', 4000);
+        return;
+      }
       if (m === 'finish') {
         await updateBook(b.id, { finished: !b.finished, ...(b.finished ? { lastPage: 1 } : {}) });
         await load();
@@ -194,9 +220,11 @@ export async function mountLibrary(view, _params, nav) {
         toast(view, 'Removed from the series');
         await load();
       } else if (m === 'remove') {
-        if (!confirm(`Remove “${b.title}” from your library? The file on your device is not affected.`)) return;
-        await removeBook(b.id);
-        toast(view, 'Removed from library');
+        const where = await askRemove(view, b, driveCopies.has(b.id));
+        if (!where) return;
+        // "This device" leaves the book in the account (sync treats it like a removed download).
+        await removeBook(b.id, where === 'here' ? 'download' : undefined);
+        toast(view, where === 'here' ? 'Removed from this device' : 'Removed from library');
         await load();
       }
     });
@@ -262,6 +290,14 @@ export async function mountLibrary(view, _params, nav) {
   }
 
   content.addEventListener('click', (e) => {
+    // A book in Google Drive only: download it, then open it.
+    const cloudCard = e.target.closest('.card.is-cloud .card-cover');
+    if (cloudCard) {
+      e.preventDefault();
+      const b = books.find((x) => x.id === cloudCard.closest('.card').dataset.id);
+      if (b) openCloudBook(view, b, nav).catch((err) => toast(view, err.message || 'Download failed', 4000));
+      return;
+    }
     const act = e.target.closest('[data-act]');
     if (act?.dataset.act === 'add') return addBooksFlow(view, load);
     if (act?.dataset.act === 'menu') return openMenu(act);

@@ -16,6 +16,7 @@ import { mountReader } from './reader/reader.js';
 import { requestPersistence } from './db.js';
 import { getSettings, onSettingsChange } from './settings.js';
 import { initRouter, nav, currentRoute } from './router.js';
+import { startSync } from './sync/index.js';
 
 function applyTheme({ theme }) {
   const root = document.documentElement;
@@ -27,6 +28,7 @@ onSettingsChange((s, key) => key === 'theme' && applyTheme(s));
 
 registerSW({ immediate: true });
 requestPersistence();
+startSync();
 
 const app = document.getElementById('app');
 let cleanup = null;
