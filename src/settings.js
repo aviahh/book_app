@@ -21,7 +21,7 @@ export const DEFAULTS = {
   translateTo: 'iw',
   speechLang: 'auto',
   fab: true, // the floating tools bubble in the reader
-  fabTools: ['search', 'bookmark', 'bookmarks', 'readAloud', 'contents'], // its favorites, in order
+  fabTools: ['search', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'], // its favorites, in order
   readContinuous: false, // read aloud: false = drag across a passage to read it; true = tap where to start, and it reads on
   speechVoice: 'microsoft', // 'microsoft' (natural voices, as in EZ_shortcut) | 'google'
 };

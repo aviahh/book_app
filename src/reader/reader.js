@@ -111,7 +111,7 @@ class Reader {
       label: () => this.#label(),
       mode: () => this.mode,
       current: () => this.spread,
-      go: (i) => this.go(i),
+      go: (i) => this.#jumpTo(visiblePages(spreadPages(this.mode, i, this.total))[0]),
     });
     this.thumbs.cache.setTone(this.settings.pageTone);
     this.#bindInput();
@@ -122,7 +122,17 @@ class Reader {
       book,
       total: this.total,
       currentPage: () => this.#currentPage(),
-      goToPage: (n, opts) => this.#goToPage(n, opts),
+      root: this.root,
+      goToPage: (n, opts) => this.#jumpTo(n, opts),
+      readingPos: () => this.readingPos,
+      stopMark: () => this.book.stopMark || null,
+      placeStopMark: () => this.#startPlacing(),
+      goToStop: () => this.#goToStop(),
+      dock: (px) => {
+        this.keepZoom = true;
+        this.dockPx = px || 0;
+        this.el.style.right = px ? `${px}px` : '';
+      },
       outline: () => this.chaptersReady.then(() => this.outlineItems || []),
       toast: (m) => this.#toast(m),
       isReading: () => !!this.readMode,
@@ -139,6 +149,9 @@ class Reader {
     this.cleanups.push(trackReading(() => !document.hidden));
     this.#applySettings(this.settings);
     this.startPage = Math.min(book.lastPage || 1, this.total);
+    // The reading position: the page being read, kept in place while you look
+    // something up elsewhere in the book (a jump), until you read on there.
+    this.readingPos = Math.min(book.readingPos || book.lastPage || 1, this.total);
     try {
       const open = JSON.parse(localStorage.getItem(READING_KEY) || 'null');
       if (open && open.id === book.id && open.view && Date.now() - open.at < 12 * 3600 * 1000) {
@@ -149,6 +162,11 @@ class Reader {
     this.#layout();
     this.#showChrome();
     updateBook(book.id, { lastOpenedAt: Date.now() });
+    // Closed the book while looking something up: offer the way back.
+    if (this.readingPos !== this.#currentPage()) {
+      this.returnTo = { page: this.readingPos, view: null, moves: 0 };
+      this.#syncReturn();
+    }
   }
 
   // ------------------------------------------------------------------ DOM
@@ -201,6 +219,8 @@ class Reader {
       </div>
       <div class="word-pop" hidden role="dialog" aria-label="Translation"></div>
       <div class="toast" hidden></div>
+      <div class="return-pill" hidden><button data-act="returnBack" class="rp-go">${icons.back}<span></span></button><button data-act="returnDismiss" class="rp-x" aria-label="Stay here">${icons.close}</button></div>
+      <div class="place-hint" hidden><span>Tap the line where you stopped</span><button data-act="placeCancel">Cancel</button></div>
     `;
     this.root.append(el);
     this.stage = el.querySelector('.stage');
@@ -225,6 +245,178 @@ class Reader {
     if (this.tools) this.tools.sync();
   }
 
+  // ---- reading position, the way back, and where you stopped
+
+  #setReadingPos(n) {
+    if (n === this.readingPos) return;
+    this.readingPos = n;
+    this.book.readingPos = n;
+    clearTimeout(this.posTimer);
+    this.posTimer = setTimeout(() => updateBook(this.book.id, { readingPos: n }), 600);
+    if (this.tools) this.tools.decorateAll();
+  }
+
+  /** A jump elsewhere in the book (search, contents, bookmarks…): remember the way back. */
+  async #jumpTo(n, opts) {
+    // The zoom itself (not the on-screen page size): the way back is usually taken
+    // after the Search panel has closed and the book has its full width again.
+    if (!this.returnTo) this.returnTo = { page: this.readingPos, view: { ...this.#viewAnchor(), w: 0 }, moves: 0 };
+    this.jumpPending = true;
+    try {
+      await this.#goToPage(n, opts);
+    } finally {
+      this.jumpPending = false;
+    }
+    this.#syncReturn();
+  }
+
+  async #goBack() {
+    const r = this.returnTo;
+    if (!r) return;
+    this.returnTo = null;
+    this.#syncReturn();
+    this.jumpPending = true;
+    try {
+      await this.go(spreadOf(this.mode, r.page));
+      // The same spot and zoom as before, when the layout is still the same.
+      if (r.view && r.view.mode === this.mode) this.#restoreView(r.view);
+    } finally {
+      this.jumpPending = false;
+    }
+    this.#setReadingPos(r.page);
+  }
+
+  #syncReturn() {
+    const pill = this.el.querySelector('.return-pill');
+    const r = this.returnTo;
+    const away = r && !visiblePages(spreadPages(this.mode, this.spread, this.total)).includes(r.page);
+    pill.hidden = !away;
+    if (away) pill.querySelector('.rp-go span').textContent = `Back to page ${r.page}`;
+  }
+
+  #startPlacing() {
+    this.placing = true;
+    this.el.classList.add('placing');
+    this.el.querySelector('.place-hint').hidden = false;
+    this.#hideChrome();
+  }
+
+  #stopPlacing() {
+    this.placing = false;
+    this.el.classList.remove('placing');
+    this.el.querySelector('.place-hint').hidden = true;
+  }
+
+  /** The page element under a screen point, with its rectangle. */
+  #pageAt(x, y) {
+    const root = this.mode === 'single' ? this.stripEl : this.bookEl;
+    for (const p of root.querySelectorAll('.slot .page[data-page]')) {
+      const r = p.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { el: p, n: +p.dataset.page, rect: r };
+    }
+    return null;
+  }
+
+  /** The line of text at height y on a page (its spans, left to right), or null. */
+  #lineAt(pageEl, x, y) {
+    const layer = pageEl.querySelector('.textLayer');
+    const spans = layer ? collectSpans([layer]) : [];
+    if (!spans.length) return null;
+    const rects = spans.map((s) => s.getBoundingClientRect());
+    let best = -1;
+    let bestD = Infinity;
+    rects.forEach((r, i) => {
+      const d = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+      const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+      const score = d * 3 + dx * 0.05;
+      if (score < bestD) (bestD = score), (best = i);
+    });
+    if (best < 0 || bestD > 90) return null;
+    const mid = (rects[best].top + rects[best].bottom) / 2;
+    const h = rects[best].height;
+    const line = spans.map((s, i) => ({ s, r: rects[i] })).filter((o) => Math.abs((o.r.top + o.r.bottom) / 2 - mid) < h * 0.5).sort((a, b) => a.r.left - b.r.left);
+    return { text: line.map((o) => o.s.textContent).join(' ').replace(/\s+/g, ' ').trim(), rects: line.map((o) => o.r), mid };
+  }
+
+  async #placeAt(ptr) {
+    this.#stopPlacing();
+    const hit = this.#pageAt(ptr.cx0, ptr.cy0);
+    if (!hit) return this.#toast('Tap on a page to mark where you stopped');
+    const line = this.#lineAt(hit.el, ptr.cx0, ptr.cy0);
+    const fy = ((line ? line.mid : ptr.cy0) - hit.rect.top) / hit.rect.height;
+    const mark = { page: hit.n, fy: Math.max(0, Math.min(1, fy)), line: line ? line.text.slice(0, 160) : '', at: Date.now() };
+    this.book.stopMark = mark;
+    await updateBook(this.book.id, { stopMark: mark });
+    this.tools.decorateAll();
+    if (line) this.#flash(line.rects, 'stopline');
+    if (navigator.vibrate) navigator.vibrate(10);
+    this.#toast(line ? `Marked where you stopped · page ${hit.n}` : `Marked the spot on page ${hit.n} (no text there to mark a line)`);
+  }
+
+  /** Back to where you stopped: that page, the line marked (or the spot, if no line was recorded). */
+  async #goToStop() {
+    const m = this.book.stopMark;
+    if (!m) return this.#toast('Nothing marked yet — use “Mark where I stopped”');
+    await this.#jumpTo(m.page);
+    let shown = null;
+    for (let t = 0; t < 30 && !(shown = this.#shownPageText(m.page)); t++) await new Promise((r) => setTimeout(r, 100));
+    const pageEl = (this.mode === 'single' ? this.stripEl : this.bookEl).querySelector(`.slot .page[data-page="${m.page}"]`);
+    if (!pageEl) return;
+    const pr = pageEl.getBoundingClientRect();
+    let rects = null;
+    if (m.line && shown) {
+      // Find the marked line again: the occurrence of its text nearest the marked height.
+      const key = m.line.slice(0, 40).toLowerCase();
+      const hay = shown.text.toLowerCase();
+      let best = null;
+      for (let at = hay.indexOf(key); at >= 0; at = hay.indexOf(key, at + 1)) {
+        let a = at;
+        let b = Math.min(shown.text.length, at + m.line.length) - 1;
+        while (a < b && !shown.map[a]) a++;
+        while (b > a && !shown.map[b]) b--;
+        if (!shown.map[a] || !shown.map[b]) continue;
+        const rs = rangeRects(shown.spans, shown.map[a], { index: shown.map[b].index, offset: shown.map[b].offset + 1 });
+        if (!rs.length) continue;
+        const d = Math.abs((rs[0].top + rs[0].bottom) / 2 - (pr.top + m.fy * pr.height));
+        if (!best || d < best.d) best = { d, rs };
+      }
+      if (best) rects = best.rs;
+    }
+    if (!rects) {
+      // No line to show: mark the height that was recorded, and say so.
+      const y = pr.top + m.fy * pr.height;
+      rects = [{ left: pr.left + pr.width * 0.04, right: pr.right - pr.width * 0.04, top: y - 14, bottom: y + 14, width: pr.width * 0.92, height: 28 }];
+      this.#flash(rects, 'stopband');
+      this.#toast(m.line ? 'The marked line moved — showing the marked spot' : 'No exact line was recorded here — this is the marked spot');
+    } else this.#flash(rects, 'stopline');
+    await this.#reveal(rects);
+  }
+
+  /** Mark rectangles briefly (they fade away). */
+  #flash(rects, cls, ms = 3200) {
+    this.#drawHighlights(rects, cls);
+    const marks = [...this.hlLayer.querySelectorAll(`.hl.${cls}`)];
+    this.findFade = setTimeout(() => {
+      for (const m of marks) m.classList.add('fading');
+      setTimeout(() => marks.forEach((m) => m.remove()), 700);
+    }, ms);
+  }
+
+  /** Bring rectangles into view, keeping the zoom. */
+  async #reveal(rects) {
+    const box = this.el.getBoundingClientRect();
+    const l = Math.min(...rects.map((x) => x.left)) - box.left;
+    const r = Math.max(...rects.map((x) => x.right)) - box.left;
+    const t = Math.min(...rects.map((x) => x.top)) - box.top;
+    const b = Math.max(...rects.map((x) => x.bottom)) - box.top;
+    const cam = this.camera;
+    if (l > this.W * 0.06 && r < this.W * 0.94 && t > this.H * 0.12 && b < this.H * 0.8) return;
+    if (!cam.zoomed && this.mode !== 'single') return; // the whole spread is on screen
+    const dx = r - l > this.W * 0.9 ? 0 : this.W / 2 - (l + r) / 2;
+    await cam.animateTo(cam.s, cam.tx + dx, cam.ty + (this.H * 0.42 - (t + b) / 2), 420);
+    if (this.mode === 'single') this.#syncStrip();
+  }
+
   /** Go to page n (from search, bookmarks, contents); with `find`, mark that match on it. */
   async #goToPage(n, { find, nth = 0 } = {}) {
     await this.go(spreadOf(this.mode, n));
@@ -246,15 +438,9 @@ class Reader {
     if (!shown.map[a] || !shown.map[b]) return;
     const rects = rangeRects(shown.spans, shown.map[a], { index: shown.map[b].index, offset: shown.map[b].offset + 1 });
     if (!rects.length) return;
-    this.#drawHighlights(rects, 'find');
-    if (this.mode === 'single') {
-      const top = Math.min(...rects.map((x) => x.top));
-      const box = this.el.getBoundingClientRect();
-      if (top < box.top + this.H * 0.12 || top > box.top + this.H * 0.75) {
-        const cam = this.camera;
-        cam.animateTo(cam.s, cam.tx, cam.ty + (box.top + this.H * 0.35 - top), 400);
-      }
-    }
+    // Keep the zoom: bring the match into view, then let the mark fade.
+    this.#flash(rects, 'find', 2600);
+    await this.#reveal(rects);
   }
 
   // ------------------------------------------------------------------ layout
@@ -331,10 +517,14 @@ class Reader {
     // The exact view to keep: the same screen with a new size (e.g. full
     // screen ended while away in Google Translate), or reopening the app.
     const keep = this.mode ? this.#viewAnchor() : this.pendingView || null;
+    // Search docking beside the book: keep the zoom itself, not the page's size on screen.
+    if (keep && this.keepZoom) keep.w = 0;
+    this.keepZoom = false;
     if (!this.mode && this.pendingView) this.focus = !!this.pendingView.focus;
     // The layout the screen calls for; zoomed into one page in landscape
     // ("focus"), the one-page scroll is used instead of the spread.
-    const natural = this.lock.locked ? this.lock.lockedMode : W > H ? 'double' : 'single';
+    // (Search docked beside the book narrows it: the layout still follows the whole screen.)
+    const natural = this.lock.locked ? this.lock.lockedMode : W + (this.dockPx || 0) > H ? 'double' : 'single';
     if (natural !== 'double' || this.settings.focusZoom === false) this.focus = false;
     this.natural = natural;
     const mode = natural === 'double' && this.focus ? 'single' : natural;
@@ -817,6 +1007,16 @@ class Reader {
   #afterMove() {
     this.#updateIndicator();
     this.#saveProgress();
+    if (!this.jumpPending) {
+      const r = this.returnTo;
+      if (r) {
+        const shown = visiblePages(spreadPages(this.mode, this.spread, this.total));
+        // Back where you were, or you've read on from here: the way back is no longer needed.
+        if (shown.includes(r.page) || ++r.moves >= 3) this.returnTo = null;
+      }
+      if (!this.returnTo) this.#setReadingPos(this.#currentPage());
+      this.#syncReturn();
+    }
     if (this.camera.zoomed) {
       clearTimeout(this.hiResTimer);
       this.hiResTimer = setTimeout(() => this.#hiRes(), 120);
@@ -1193,7 +1393,7 @@ class Reader {
     on(document, 'webkitfullscreenchange', () => this.#syncFullscreenButton());
 
     on(window, 'keydown', (e) => {
-      if (e.target.closest?.('input')) return;
+      if (e.target.closest?.('input, textarea, [contenteditable]')) return; // typing, not turning pages
       const k = e.key;
       const portrait = this.mode === 'single';
       if (portrait && (k === 'ArrowDown' || k === ' ')) this.camera.animateTo(this.camera.s, this.camera.tx, this.camera.ty - this.H * 0.85, 300), e.preventDefault();
@@ -1228,9 +1428,9 @@ class Reader {
         this.thumbs.toggle();
         return btn.classList.toggle('on', this.thumbs.open);
       case 'first':
-        return this.go(0);
+        return this.#jumpTo(1);
       case 'last':
-        return this.go(this.spreadTotal - 1);
+        return this.#jumpTo(this.total);
       case 'prev':
         return this.step(-1);
       case 'next':
@@ -1257,6 +1457,14 @@ class Reader {
         return this.speech.stop();
       case 'ttsBack':
         return this.speech.back();
+      case 'returnBack':
+        return this.#goBack();
+      case 'returnDismiss':
+        this.returnTo = null;
+        this.#setReadingPos(this.#currentPage());
+        return this.#syncReturn();
+      case 'placeCancel':
+        return this.#stopPlacing();
       case 'ttsMode':
         setSetting('readContinuous', !this.settings.readContinuous);
         return this.#onSpeechState(this.speech.state);
@@ -1311,7 +1519,7 @@ class Reader {
       const n = parseInt(input.value, 10);
       btn.innerHTML = `<span class="cur"></span><span class="of">/${this.total}</span>`;
       this.#updateIndicator();
-      if (go && n >= 1 && n <= this.total) this.go(spreadOf(this.mode, n));
+      if (go && n >= 1 && n <= this.total) this.#jumpTo(n);
       this.#armHide();
     };
     input.addEventListener('keydown', (e) => {
@@ -1840,6 +2048,7 @@ class Reader {
   }
 
   #tap(ptr) {
+    if (this.placing) return this.#placeAt(ptr);
     // Side arrows
     if (ptr.zone === 'arrow-next' || ptr.zone === 'arrow-prev') {
       const visible = this.el.classList.contains('arrows-on');
@@ -1879,7 +2088,11 @@ class Reader {
   }
 
   #drawHighlights(rects, cls) {
-    const cam = this.camera;
+    // Rectangles were measured from what is on screen: use the view that is
+    // on screen too, not one still waiting for the next frame (mid-animation
+    // these differ, and the mark would land in the wrong place).
+    const cam = this.camera.shown || this.camera;
+    clearTimeout(this.findFade);
     this.hlLayer.replaceChildren(
       ...rects.map((r) => {
         const l = this.lock.rectToLocal(r);
@@ -2300,7 +2513,7 @@ class Reader {
 
   /** A tap on text in read-aloud mode: read from that word on. Returns whether it did. */
   #readFrom(ptr) {
-    if (!this.readMode || !this.settings.readContinuous) return false;
+    if (this.placing || !this.readMode || !this.settings.readContinuous) return false;
     const spans = collectSpans(this.#textLayers());
     const pos = hitTest(spans, ptr.cx0, ptr.cy0, { mode: 'char', maxDist: 14 });
     if (!pos) return false;

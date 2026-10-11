@@ -1232,6 +1232,23 @@ html.reading body {
   mix-blend-mode: multiply;
   animation: find-pulse 1.2s ease 2;
 }
+.hl.stopline {
+  background: rgba(210, 162, 108, 0.42);
+  box-shadow: 0 0 0 2px rgba(210, 162, 108, 0.55);
+  mix-blend-mode: multiply;
+  animation: find-pulse 1.2s ease 2;
+}
+.hl.stopband {
+  background: repeating-linear-gradient(-45deg, rgba(210, 162, 108, 0.3) 0 6px, rgba(210, 162, 108, 0.12) 6px 12px);
+  box-shadow: 0 0 0 1px rgba(210, 162, 108, 0.6);
+  border-radius: 6px;
+}
+.hl.stopline.fading,
+.hl.stopband.fading,
+.hl.find.fading {
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
 .reader[data-tone='night'] .hl.find {
   mix-blend-mode: screen;
 }
@@ -1375,7 +1392,7 @@ html.reading body {
 
 /* ---------- side panel: search, bookmarks, contents, bubble editor ---------- */
 .tool-panel {
-  position: absolute;
+  position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
@@ -1678,4 +1695,337 @@ html.reading body {
   color: #d2a26c;
   font-size: 0.88rem;
   font-weight: 560;
+}
+
+/* Search docked beside the book (wide screens): part of the layout, not over it */
+.tool-panel.docked {
+  box-shadow: -1px 0 0 rgba(255, 255, 255, 0.06);
+  background: rgba(24, 21, 18, 0.98);
+}
+.tp-results li.current {
+  background: rgba(210, 162, 108, 0.16);
+  box-shadow: inset 3px 0 0 #d2a26c;
+}
+
+/* Phones: Search shrunk to a small bar after picking a result */
+.find-bar {
+  position: absolute;
+  top: calc(14px + var(--safe-top));
+  left: 50%;
+  z-index: 27;
+  display: flex;
+  align-items: center;
+  max-width: calc(100% - 24px);
+  padding: 4px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: rgba(22, 20, 17, 0.9);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  color: #efe8dc;
+  white-space: nowrap;
+  animation: pill-in 0.2s ease;
+}
+.find-bar[hidden] {
+  display: none;
+}
+.reader.read-mode .find-bar {
+  top: calc(76px + var(--safe-top));
+}
+.find-bar button {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  line-height: 0;
+  color: #efe8dc;
+}
+.find-bar button svg {
+  display: block;
+  margin: 0 auto;
+  width: 18px;
+  height: 18px;
+}
+.fb-count {
+  min-width: 56px;
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.fb-q {
+  min-width: 0;
+  max-width: 120px;
+  margin: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #d2a26c;
+  font-size: 0.88rem;
+}
+
+/* The way back after a jump */
+.return-pill {
+  position: absolute;
+  left: 50%;
+  bottom: calc(22px + var(--safe-bottom));
+  z-index: 23;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: rgba(22, 20, 17, 0.88);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(210, 162, 108, 0.45);
+  white-space: nowrap;
+  transition: bottom 0.25s ease;
+  animation: return-in 0.3s ease;
+}
+@keyframes return-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+}
+.return-pill[hidden] {
+  display: none;
+}
+.reader.chrome-on:not(.toolbar-top) .return-pill {
+  bottom: calc(96px + var(--safe-bottom));
+}
+.rp-go {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px 0 8px;
+  border-radius: 999px;
+  color: #f7f3ec;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.rp-go svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  color: #d2a26c;
+}
+.rp-x {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  line-height: 0;
+  color: rgba(239, 232, 220, 0.6);
+}
+.rp-x svg {
+  display: block;
+  margin: 0 auto;
+  width: 15px;
+  height: 15px;
+}
+
+/* Choosing where you stopped */
+.place-hint {
+  position: absolute;
+  left: 50%;
+  top: calc(14px + var(--safe-top));
+  z-index: 27;
+  display: flex;
+  align-items: center;
+  padding: 4px 4px 4px 18px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: #d2a26c;
+  color: #1f1b16;
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: pill-in 0.2s ease;
+}
+.place-hint[hidden] {
+  display: none;
+}
+.place-hint button {
+  margin-left: 12px;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(31, 27, 22, 0.14);
+  color: #1f1b16;
+  font-weight: 600;
+}
+.reader.placing .stage {
+  cursor: crosshair;
+}
+
+/* Reading position: a gold ribbon that slides in on its page */
+.page.reading-pos::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: calc(8% + 22px);
+  z-index: 3;
+  width: 14px;
+  height: 30px;
+  background: linear-gradient(#e2b77f, #c0904f);
+  -webkit-clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
+  pointer-events: none;
+  transform-origin: top;
+  animation: ribbon-in 0.5s 0.15s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+.page.bookmarked::after {
+  animation: ribbon-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+@keyframes ribbon-in {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+/* Where you stopped: a flag in the page margin at that line */
+.stop-flag {
+  position: absolute;
+  left: 0;
+  z-index: 3;
+  width: 26px;
+  height: 22px;
+  margin-top: -11px;
+  padding: 3px 5px 3px 3px;
+  border-radius: 0 11px 11px 0;
+  background: #d2a26c;
+  color: #1f1b16;
+  line-height: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  animation: flag-in 0.35s ease backwards;
+}
+.stop-flag svg {
+  width: 16px;
+  height: 16px;
+}
+.stop-flag.no-line {
+  background: repeating-linear-gradient(-45deg, #d2a26c 0 4px, #e6c79d 4px 8px);
+}
+@keyframes flag-in {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+/* Bookmarks panel: the two automatic marks, notes */
+.marks .mk {
+  align-items: center;
+  flex-wrap: nowrap;
+  padding-right: 48px;
+}
+.mk-ico {
+  display: block;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  margin-right: 12px;
+  padding: 8px;
+  border-radius: 50%;
+  line-height: 0;
+  background: linear-gradient(#e2b77f, #c0904f);
+  color: #1f1b16;
+}
+.mk.stop .mk-ico {
+  background: rgba(210, 162, 108, 0.2);
+  color: #d2a26c;
+  box-shadow: inset 0 0 0 1.5px #d2a26c;
+}
+.mk-ico svg {
+  width: 20px;
+  height: 20px;
+}
+.mk-text {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.mk-text b {
+  display: block;
+  font-size: 0.95rem;
+}
+.mk-sub {
+  display: block;
+  margin-top: 2px;
+  color: rgba(239, 232, 220, 0.62);
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tp-note-text {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 4px;
+  color: #f7f3ec;
+  font-weight: 560;
+  font-size: 0.92rem;
+}
+.tp-note-text + .tp-snip {
+  flex-basis: 100%;
+  margin-left: 46px;
+  color: rgba(239, 232, 220, 0.6);
+  font-size: 0.82rem;
+}
+.tp-link {
+  padding: 0;
+  color: #d2a26c;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+.tp-note {
+  display: block;
+  margin-top: 6px;
+}
+.tp-note span {
+  display: block;
+  margin: 0 4px 8px;
+  color: rgba(239, 232, 220, 0.65);
+  font-size: 0.86rem;
+}
+.tp-note textarea {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 14px;
+  outline: 0;
+  resize: none;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: #f7f3ec;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+.tp-note textarea:focus {
+  box-shadow: inset 0 0 0 1.5px #d2a26c;
+}
+.tp-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.tp-btn {
+  min-height: 42px;
+  margin-left: 10px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: #d2a26c;
+  color: #1f1b16;
+  font-weight: 600;
+}
+.tp-btn.quiet {
+  background: rgba(255, 255, 255, 0.08);
+  color: #efe8dc;
 }

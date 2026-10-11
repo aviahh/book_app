@@ -81,6 +81,7 @@ export class Camera {
       this.el.style.willChange = 'auto';
     }, 220);
     this.el.style.transform = `translate3d(${this.tx}px, ${this.ty}px, 0) scale(${this.s})`;
+    this.shown = { s: this.s, tx: this.tx, ty: this.ty }; // what is on screen now (positions measured from the page match this)
     this.onChange?.();
   }
 

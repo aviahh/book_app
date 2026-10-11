@@ -205,45 +205,59 @@ const NEEDS_UNLOCK = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.pla
  *    end; it is asked for more while earlier pieces play. `onPiece(i)` hears
  *    each piece as it starts, so the reader can highlight it and turn pages.
  *
- * The Microsoft voice plays gaplessly through Web Audio: upcoming pieces are
- * downloaded and decoded ahead (READY_AHEAD), and a couple are already placed
- * on the audio clock (QUEUED_AHEAD) so each one starts the instant the
- * previous one ends, even if the page is busy or in the background. Each
- * clip's own leading and trailing silence is trimmed and replaced by a pause
- * that fits the punctuation, so sentences flow like one recording.
- * The Google voice (and any browser without Web Audio) plays through two
- * <audio> elements: one plays while the other holds the next piece.
+ * Sound always goes through an ordinary <audio> element (the device's media
+ * player, with its usual sound quality and effects; Web Audio was tried and
+ * sounded thinner on some tablets).
+ *
+ * The Microsoft voice is gapless where the browser supports Media Source
+ * Extensions: the pieces are joined into one continuous stream on a single
+ * element. Upcoming pieces are downloaded ahead (READY_AHEAD); each clip's
+ * own leading and trailing silence is cut at the join and replaced by a
+ * pause that fits its punctuation, so sentences flow like one recording.
+ * Elsewhere (older iPads, iPhones, the Google voice) two elements take
+ * turns: one plays while the other holds the next piece.
  *
  * Only the last few pieces are kept behind the current one (for back()).
  */
 const KEEP_BACK = 3; // pieces kept behind the current one (a few lines)
-const READY_AHEAD = 4; // pieces downloaded and decoded ahead (Microsoft voice)
-const QUEUED_AHEAD = 2; // pieces already scheduled on the audio clock beyond the current one
+const READY_AHEAD = 4; // pieces downloaded ahead
+const BUFFER_AHEAD = 40; // seconds of joined audio queued in the stream at most
 const MAX_FETCHES = 3; // voice requests in flight at once
-const AC = window.AudioContext || window.webkitAudioContext;
+const MS = window.MediaSource;
+const MSE_MP3 = !!(MS && MS.isTypeSupported && MS.isTypeSupported('audio/mpeg'));
+const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
 
-const decode = (ctx, data) =>
-  new Promise((resolve, reject) => {
-    // Old Safari only has the callback form.
-    const p = ctx.decodeAudioData(data, resolve, reject);
-    if (p && p.then) p.then(resolve, reject);
-  });
-
-/** Where the voice really starts and ends in a clip, and the pause to leave after it. */
-function trimClip(buffer, text) {
-  const d = buffer.getChannelData(0);
-  const sr = buffer.sampleRate;
-  const quiet = 0.006;
-  let a = 0;
-  while (a < d.length && Math.abs(d[a]) < quiet) a++;
-  let b = d.length - 1;
-  while (b > a && Math.abs(d[b]) < quiet) b--;
-  if (b <= a) return { offset: 0, length: buffer.duration, slot: buffer.duration };
+/**
+ * Where the voice really starts and ends in a clip (seconds), measured by
+ * decoding it offline (no sound is played), and the pause to leave after it.
+ */
+function measureClip(bytes, text) {
   const t = text.trim();
   const pause = /[.!?…]["'”’)\]]*$/.test(t) ? 0.3 : /[,;:—–]["'”’)\]]*$/.test(t) ? 0.16 : 0.05;
-  const offset = Math.max(0, a / sr - 0.025);
-  const voiceEnd = b / sr + 0.03;
-  return { offset, length: Math.min(buffer.duration, voiceEnd + pause) - offset, slot: voiceEnd - offset + pause };
+  if (!OAC) return Promise.resolve({ lead: 0, voiceEnd: Infinity, pause });
+  return new Promise((resolve) => {
+    let ctx;
+    try {
+      ctx = new OAC(1, 2, 24000);
+    } catch (e) {
+      return resolve({ lead: 0, voiceEnd: Infinity, pause });
+    }
+    const done = (buffer) => {
+      const d = buffer.getChannelData(0);
+      const sr = buffer.sampleRate;
+      const quiet = 0.006;
+      let a = 0;
+      while (a < d.length && Math.abs(d[a]) < quiet) a++;
+      let b = d.length - 1;
+      while (b > a && Math.abs(d[b]) < quiet) b--;
+      if (b <= a) return resolve({ lead: 0, voiceEnd: Infinity, pause });
+      // Small margins: the stream's timeline can differ from the decoder's by a frame.
+      resolve({ lead: Math.max(0, a / sr - 0.06), voiceEnd: b / sr + 0.06, pause });
+    };
+    const fail = () => resolve({ lead: 0, voiceEnd: Infinity, pause });
+    const p = ctx.decodeAudioData(bytes.slice(0), done, fail);
+    if (p && p.then) p.then(done, fail);
+  });
 }
 
 export class Speech {
@@ -251,26 +265,23 @@ export class Speech {
     this.onState = onState || (() => {});
     this.onPiece = onPiece || (() => {});
     this.voicePref = voice;
-    // Two elements: one plays while the other holds the next piece.
+    // Two elements: one plays while the other holds the next piece (or the
+    // first one carries the whole joined stream).
     this.players = [new Audio(), new Audio()];
     for (const a of this.players) {
       a.preload = 'auto';
-      a.addEventListener('ended', () => a.dataset.real && this.#advance());
-      a.addEventListener('error', () => a.dataset.real && this.#onError());
+      a.addEventListener('ended', () => (a.dataset.real ? this.#advance() : this.ms && a === this.ms.audio && this.#msEnded()));
+      a.addEventListener('error', () => (a.dataset.real || (this.ms && a === this.ms.audio)) && this.#onError());
     }
     this.state = 'idle';
     this.gen = 0;
     this.session = 0;
     this.blobs = new Map();
-    this.clips = new Map();
+    this.bytes = new Map();
     this.chunks = [];
     this.index = 0;
     this.fetching = 0;
     this.waiting = [];
-    document.addEventListener('visibilitychange', () => {
-      // iOS can suspend the audio clock while the app is away.
-      if (!document.hidden && this.wa && this.state === 'playing' && this.ctx.state !== 'running') this.ctx.resume();
-    });
   }
 
   get active() {
@@ -279,19 +290,6 @@ export class Speech {
 
   /** Call from inside a tap (e.g. the speaker button): lets audio start later without one. */
   unlock() {
-    if (AC) {
-      try {
-        if (!this.ctx) this.ctx = new AC();
-        if (this.ctx.state !== 'running') this.ctx.resume();
-        // A moment of silence through the clock, inside the tap (older iOS needs it).
-        const s = this.ctx.createBufferSource();
-        s.buffer = this.ctx.createBuffer(1, 1, 22050);
-        s.connect(this.ctx.destination);
-        s.start(0);
-        // iOS: speech is real playback, not a sound effect (so the ring/silent switch doesn't mute it).
-        if (navigator.audioSession) navigator.audioSession.type = 'playback';
-      } catch (e) {}
-    }
     if (this.active || !NEEDS_UNLOCK) return;
     for (const a of this.players) {
       delete a.dataset.real;
@@ -299,14 +297,6 @@ export class Speech {
       const p = a.play();
       if (p && p.then) p.then(() => a.pause()).catch(() => {});
     }
-    if (!this.keepAlive) {
-      // Older iOS mutes Web Audio with the silent switch unless an <audio>
-      // element is playing too: a silent, looping one keeps it audible.
-      this.keepAlive = new Audio(SILENCE);
-      this.keepAlive.loop = true;
-    }
-    const k = this.keepAlive.play();
-    if (k && k.then) k.then(() => !this.active && this.keepAlive.pause()).catch(() => {});
     if (!this.speechUnlocked && 'speechSynthesis' in window) {
       this.speechUnlocked = true;
       try {
@@ -371,14 +361,14 @@ export class Speech {
 
   /** Download piece i from the Microsoft voice (a few at a time, each retried once). */
   #download(i) {
+    if (this.bytes.has(i)) return this.bytes.get(i);
     const url = urlFor('edge', this.chunks[i], this.lang);
     const get = () =>
       Promise.race([fetch(url), new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))]).then((r) =>
         r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status)),
       );
-    const slot = () =>
-      this.fetching < MAX_FETCHES ? Promise.resolve() : new Promise((r) => this.waiting.push(r));
-    return slot().then(() => {
+    const slot = () => (this.fetching < MAX_FETCHES ? Promise.resolve() : new Promise((r) => this.waiting.push(r)));
+    const p = slot().then(() => {
       this.fetching++;
       const done = () => {
         this.fetching--;
@@ -387,34 +377,21 @@ export class Speech {
       };
       // A passing hiccup (weak Wi-Fi, a busy moment at the voice service)
       // shouldn't swap the voice: try again before giving up on it.
-      const p = get()
+      const q = get()
         .catch(() => new Promise((r) => setTimeout(r, 600)).then(get))
         .then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? b : Promise.reject(new Error('no audio'))));
-      p.then(done, done);
-      return p;
+      q.then(done, done);
+      return q;
     });
+    this.bytes.set(i, p);
+    return p;
   }
 
-  /** A playable URL for piece i (<audio> path): a blob for the Microsoft voice, the direct address for Google's. */
+  /** A playable URL for piece i (two-element path): a blob for the Microsoft voice, the direct address for Google's. */
   #src(i) {
     if (this.provider !== 'edge') return Promise.resolve(urlFor(this.provider, this.chunks[i], this.lang));
     if (!this.blobs.has(i)) this.blobs.set(i, this.#download(i).then((b) => URL.createObjectURL(b)));
     return this.blobs.get(i);
-  }
-
-  /** Piece i decoded and trimmed, ready for the audio clock (Web Audio path). */
-  #clip(i) {
-    if (!this.clips.has(i)) {
-      const text = this.chunks[i];
-      this.clips.set(
-        i,
-        this.#download(i)
-          .then((b) => b.arrayBuffer())
-          .then((data) => decode(this.ctx, data))
-          .then((buffer) => ({ buffer, ...trimClip(buffer, text) })),
-      );
-    }
-    return this.clips.get(i);
   }
 
   #freeBlobs(keep = () => false) {
@@ -423,7 +400,7 @@ export class Speech {
       p.then((u) => u.indexOf('blob:') === 0 && URL.revokeObjectURL(u), () => {});
       this.blobs.delete(i);
     }
-    for (const i of [...this.clips.keys()]) if (!keep(i)) this.clips.delete(i);
+    for (const i of [...this.bytes.keys()]) if (!keep(i)) this.bytes.delete(i);
   }
 
   /** Forget what lies more than a few pieces behind (audio, and the text of a continuous reading). */
@@ -435,7 +412,7 @@ export class Speech {
 
   /** (Re)start playback at piece i with the current provider. */
   #playFrom(i) {
-    this.#waStop();
+    this.#msStop();
     const gen = ++this.gen;
     for (const a of this.players) {
       delete a.dataset.real;
@@ -444,98 +421,151 @@ export class Speech {
     this.index = i;
     this.cur = 0;
     this.#set('loading');
-    if (this.provider === 'edge' && this.ctx) return this.#waStart(i, gen);
+    if (this.provider === 'edge' && MSE_MP3 && !this.noMse) return this.#msStart(i, gen);
     return this.#elStart(i, gen);
   }
 
-  // ---- Web Audio (gapless) path
+  // ---- one joined stream (Media Source Extensions)
 
-  #waStart(i, gen) {
-    this.wa = { gen, queue: [], next: 0, nextIndex: i, shown: -1, ended: false, pumping: false };
-    if (this.ctx.state !== 'running') this.ctx.resume();
-    if (this.keepAlive) this.keepAlive.play().catch(() => {});
-    this.waTimer = setInterval(() => this.#waTick(), 40);
-    this.#waPump();
-  }
-
-  #waStop() {
-    clearInterval(this.waTimer);
-    const wa = this.wa;
-    this.wa = null;
-    if (!wa) return;
-    for (const q of wa.queue) {
+  #msStart(i, gen) {
+    const audio = this.players[0];
+    const source = new MS();
+    const ms = (this.ms = { gen, audio, source, sb: null, url: URL.createObjectURL(source), pieces: new Map(), next: 0, nextIndex: i, first: i, shown: -1, ended: false, pumping: false, started: false });
+    audio.src = ms.url;
+    source.addEventListener('sourceopen', () => {
+      if (this.ms !== ms) return;
       try {
-        q.src.onended = null;
-        q.src.stop();
-        q.src.disconnect();
-      } catch (e) {}
-    }
+        ms.sb = source.addSourceBuffer('audio/mpeg');
+        if (ms.sb.mode !== 'sequence') ms.sb.mode = 'sequence';
+      } catch (e) {
+        return this.#msFailed(ms);
+      }
+      this.#msPump();
+    });
+    this.msTimer = setInterval(() => this.#msTick(), 50);
   }
 
-  /** Keep the clock fed: decode ahead, and schedule pieces back to back. */
-  async #waPump() {
-    const wa = this.wa;
-    if (!wa || wa.pumping || wa.ended) return;
-    wa.pumping = true;
+  #msStop() {
+    clearInterval(this.msTimer);
+    const ms = this.ms;
+    this.ms = null;
+    if (!ms) return;
+    ms.audio.pause();
+    ms.audio.removeAttribute('src');
+    ms.audio.load();
+    URL.revokeObjectURL(ms.url);
+  }
+
+  /** The stream can't be used here after all: carry on with two elements. */
+  #msFailed(ms) {
+    if (this.ms !== ms) return;
+    this.noMse = true;
+    this.#playFrom(this.index);
+  }
+
+  #appendTo(sb, bytes) {
+    return new Promise((resolve, reject) => {
+      const ok = () => (sb.removeEventListener('updateend', ok), sb.removeEventListener('error', bad), resolve());
+      const bad = () => (sb.removeEventListener('updateend', ok), sb.removeEventListener('error', bad), reject(new Error('append failed')));
+      sb.addEventListener('updateend', ok);
+      sb.addEventListener('error', bad);
+      sb.appendBuffer(bytes);
+    });
+  }
+
+  /** Keep the stream fed: download ahead, and join pieces on as they arrive. */
+  async #msPump() {
+    const ms = this.ms;
+    if (!ms || !ms.sb || ms.pumping || ms.ended) return;
+    ms.pumping = true;
     try {
-      while (this.wa === wa) {
-        const now = this.ctx.currentTime;
-        // Download and decode the next few in the background.
-        for (let k = wa.nextIndex; k < wa.nextIndex + READY_AHEAD; k++) {
-          if (k < this.chunks.length && this.chunks[k] != null) this.#clip(k).catch(() => {});
+      while (this.ms === ms) {
+        for (let k = ms.nextIndex; k < ms.nextIndex + READY_AHEAD; k++) {
+          if (k < this.chunks.length && this.chunks[k] != null) this.#download(k).catch(() => {});
         }
-        if (this.chunks.length < wa.nextIndex + READY_AHEAD && !this.feedDone) this.#ensure(wa.nextIndex + READY_AHEAD - 1);
-        const queued = wa.queue.filter((q) => q.end > now).length;
-        if (queued > QUEUED_AHEAD) break; // enough on the clock; the tick calls again
-        if (!(await this.#ensure(wa.nextIndex))) {
-          if (this.wa === wa && this.feedDone) wa.ended = true;
+        if (this.chunks.length < ms.nextIndex + READY_AHEAD && !this.feedDone) this.#ensure(ms.nextIndex + READY_AHEAD - 1);
+        if (ms.next - ms.audio.currentTime > BUFFER_AHEAD) break; // plenty queued; the tick calls again
+        if (!(await this.#ensure(ms.nextIndex))) {
+          if (this.ms === ms && this.feedDone) {
+            ms.ended = true;
+            if (ms.source.readyState === 'open' && !ms.sb.updating) ms.source.endOfStream();
+          }
           break;
         }
-        const i = wa.nextIndex;
-        const clip = await this.#clip(i);
-        if (this.wa !== wa) return;
-        const src = this.ctx.createBufferSource();
-        src.buffer = clip.buffer;
-        src.connect(this.ctx.destination);
-        // Right after the previous piece, or now if we fell behind (a slow connection).
-        const at = Math.max(wa.next, this.ctx.currentTime + 0.05);
-        src.start(at, clip.offset, clip.length);
-        wa.queue.push({ i, src, start: at, end: at + clip.slot });
-        wa.next = at + clip.slot;
-        wa.nextIndex = i + 1;
+        const i = ms.nextIndex;
+        const text = this.chunks[i];
+        const blob = await this.#download(i);
+        const bytes = await new Response(blob).arrayBuffer(); // Blob.arrayBuffer() is newer than some iPads
+        const m = await measureClip(bytes, text);
+        if (this.ms !== ms) return;
+        const sb = ms.sb;
+        // Place the clip so its voice starts right at the end of the last one,
+        // and cut off its own silence on both sides.
+        const at = ms.next;
+        sb.appendWindowEnd = Infinity;
+        sb.appendWindowStart = at;
+        sb.timestampOffset = at - m.lead;
+        if (m.voiceEnd !== Infinity) sb.appendWindowEnd = at - m.lead + m.voiceEnd + m.pause;
+        await this.#appendTo(sb, bytes);
+        if (this.ms !== ms) return;
+        const end = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : at;
+        ms.pieces.set(i, { start: at, end });
+        ms.next = end;
+        ms.nextIndex = i + 1;
+        if (!ms.started) {
+          ms.started = true;
+          const gen = ms.gen;
+          ms.audio.play().catch((e) => gen === this.gen && this.#playFailed(e));
+        }
+        this.#msTrim();
       }
     } catch (e) {
-      if (this.wa === wa) {
-        wa.pumping = false;
-        return this.#onError();
+      if (this.ms === ms) {
+        ms.pumping = false;
+        // A download failed (voice service down): switch voice. Anything else: the stream itself.
+        return /HTTP|timeout|no audio|fetch/i.test(String(e && e.message)) ? this.#onError() : this.#msFailed(ms);
       }
     }
-    wa.pumping = false;
+    ms.pumping = false;
   }
 
-  #waTick() {
-    const wa = this.wa;
-    if (!wa) return;
-    const now = this.ctx.currentTime;
-    const cur = wa.queue.find((q) => now >= q.start && now < q.end);
-    if (cur && cur.i !== wa.shown) {
-      wa.shown = cur.i;
-      this.index = cur.i;
-      if (this.state === 'loading') this.#set('playing');
-      this.onPiece(cur.i);
-      this.#forgetOld();
-    }
-    // Drop finished pieces from the queue.
-    while (wa.queue.length && wa.queue[0].end < now - 1) wa.queue.shift();
-    if (wa.ended && !wa.queue.some((q) => q.end > now)) {
-      this.#waStop();
-      if (this.keepAlive) this.keepAlive.pause();
-      return this.#set('idle', true);
-    }
-    if (!wa.pumping) this.#waPump();
+  /** Drop audio from more than a few pieces back (memory). */
+  #msTrim() {
+    const ms = this.ms;
+    const keep = ms && ms.pieces.get(this.index - KEEP_BACK);
+    if (!keep || ms.sb.updating || keep.start < 1) return;
+    try {
+      ms.sb.remove(0, keep.start);
+    } catch (e) {}
   }
 
-  // ---- <audio> element path
+  #msTick() {
+    const ms = this.ms;
+    if (!ms) return;
+    const t = ms.audio.currentTime;
+    for (const [i, p] of ms.pieces) {
+      if (t >= p.start - 0.02 && t < p.end) {
+        if (i !== ms.shown) {
+          ms.shown = i;
+          this.index = i;
+          if (this.state === 'loading' && !ms.audio.paused) this.#set('playing');
+          this.onPiece(i);
+          this.#forgetOld();
+          for (const k of [...ms.pieces.keys()]) if (k < i - KEEP_BACK) ms.pieces.delete(k);
+        }
+        break;
+      }
+    }
+    if (!ms.pumping) this.#msPump();
+  }
+
+  #msEnded() {
+    if (!this.ms || !this.ms.ended) return;
+    this.#msStop();
+    this.#set('idle', true);
+  }
+
+  // ---- two <audio> elements taking turns
 
   async #load(player, i, gen) {
     if (!(await this.#ensure(i))) return false;
@@ -560,6 +590,7 @@ export class Speech {
     }
     if (gen !== this.gen) return;
     this.#load(b, i + 1, gen).catch(() => {});
+    if (this.provider === 'edge') for (let k = i + 2; k < i + READY_AHEAD; k++) this.#ensure(k).then((ok) => ok && gen === this.gen && this.#src(k).catch(() => {}));
     this.onPiece(i);
     a.play()
       .then(() => gen === this.gen && this.state === 'loading' && this.#set('playing'))
@@ -567,7 +598,7 @@ export class Speech {
   }
 
   async #advance() {
-    if (this.state === 'idle' || this.usingFallback || this.wa) return;
+    if (this.state === 'idle' || this.usingFallback || this.ms) return;
     const gen = this.gen;
     this.index++;
     const next = this.players[1 - this.cur];
@@ -585,10 +616,14 @@ export class Speech {
     if (gen !== this.gen) return;
     this.onPiece(this.index);
     next.play().catch((e) => gen === this.gen && this.#playFailed(e));
-    // Fetch the following piece into the element that just finished.
+    // Fetch the following piece into the element that just finished, and download further ahead.
     const spare = this.players[1 - this.cur];
     delete spare.dataset.real;
     this.#load(spare, this.index + 1, gen).catch(() => {});
+    if (this.provider === 'edge') {
+      const k = this.index + READY_AHEAD - 1;
+      this.#ensure(k).then((ok) => ok && gen === this.gen && this.#src(k).catch(() => {}));
+    }
     this.#forgetOld();
   }
 
@@ -597,14 +632,22 @@ export class Speech {
   /** Back one piece, or to the start of this one if it has been playing a while. */
   back() {
     if (!this.active || this.usingFallback) return;
-    let elapsed;
-    if (this.wa) {
-      const q = this.wa.queue.find((x) => x.i === this.index);
-      elapsed = q ? this.ctx.currentTime - q.start : 0;
-    } else elapsed = this.players[this.cur].currentTime;
-    const resume = this.state === 'paused';
+    const ms = this.ms;
+    if (ms) {
+      const here = ms.pieces.get(this.index);
+      const t = ms.audio.currentTime;
+      const target = here && t - here.start > 2.5 ? this.index : this.index - 1;
+      const p = ms.pieces.get(target) || here;
+      if (p) {
+        // Still in the stream: just step back in it.
+        ms.audio.currentTime = p.start + 0.001;
+        ms.shown = -1;
+        if (this.state === 'paused') this.resume();
+        return;
+      }
+    }
+    const elapsed = ms ? 0 : this.players[this.cur].currentTime;
     this.#playFrom(elapsed > 2.5 || !this.canGoBack ? this.index : this.index - 1);
-    if (resume && this.ctx && this.ctx.state !== 'running') this.ctx.resume();
   }
 
   get canGoBack() {
@@ -613,14 +656,14 @@ export class Speech {
 
   pause() {
     if (this.usingFallback) speechSynthesis.pause();
-    else if (this.wa) this.ctx.suspend();
+    else if (this.ms) this.ms.audio.pause();
     else this.players[this.cur].pause();
     this.#set('paused');
   }
 
   resume() {
     if (this.usingFallback) speechSynthesis.resume();
-    else if (this.wa) this.ctx.resume();
+    else if (this.ms) this.ms.audio.play().catch(() => {});
     else this.players[this.cur].play().catch(() => {});
     this.#set('playing');
   }
@@ -635,9 +678,7 @@ export class Speech {
     this.state = 'idle'; // first, so resetting the players can't trigger fallbacks
     this.gen++;
     this.session++;
-    this.#waStop();
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); // a paused reading leaves the clock stopped
-    if (this.keepAlive) this.keepAlive.pause();
+    this.#msStop();
     for (const a of this.players) {
       delete a.dataset.real;
       a.pause();
@@ -667,7 +708,7 @@ export class Speech {
   // provider (Microsoft → Google), and finally the device's own voice.
   #onError() {
     if (this.state === 'idle' || this.usingFallback) return;
-    this.#waStop();
+    this.#msStop();
     for (const a of this.players) a.pause();
     this.providers = this.providers.slice(1);
     this.#freeBlobs();

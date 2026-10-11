@@ -13,6 +13,8 @@ export const TOOLS = {
   search: { label: 'Search', icon: 'search' },
   bookmark: { label: 'Bookmark page', icon: 'bookmark' },
   bookmarks: { label: 'Bookmarks', icon: 'bookmarks' },
+  stopmark: { label: 'Mark where I stopped', icon: 'flag' },
+  resume: { label: 'Where I stopped', icon: 'flagGo' },
   readAloud: { label: 'Read aloud', icon: 'speaker' },
   contents: { label: 'Contents', icon: 'contents' },
   thumbs: { label: 'Page overview', icon: 'thumbs' },
@@ -22,7 +24,9 @@ export const TOOLS = {
   fullscreen: { label: 'Full screen', icon: 'expand' },
   settings: { label: 'Settings', icon: 'settings' },
 };
-export const DEFAULT_FAVORITES = ['search', 'bookmark', 'bookmarks', 'readAloud', 'contents'];
+export const DEFAULT_FAVORITES = ['search', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'];
+const DOCK_MIN = 900; // screens at least this wide keep Search open beside the book
+const DOCK_W = 380;
 
 const FAB_KEY = 'folio.fab.v1';
 const TONES = ['original', 'warm', 'night'];
@@ -64,28 +68,68 @@ export class ReaderTools {
     p.innerHTML = `
       <header class="tp-head"><h2></h2><button class="tp-close" aria-label="Close">${icons.close}</button></header>
       <div class="tp-body"></div>`;
-    this.el.append(p);
+    (this.api.root || this.el).append(p);
     p.querySelector('.tp-close').addEventListener('click', () => this.closePanel());
+    // Phones: Search shrinks to a small bar after picking a result.
+    const bar = (this.findBar = document.createElement('div'));
+    bar.className = 'find-bar';
+    bar.hidden = true;
+    bar.innerHTML = `
+      <button data-f="prev" aria-label="Previous match">${icons.chevronLeft}</button>
+      <span class="fb-count"></span>
+      <button data-f="next" aria-label="Next match">${icons.chevronRight}</button>
+      <span class="fb-q" dir="auto"></span>
+      <button data-f="list" aria-label="Show all matches">${icons.contents}</button>
+      <button data-f="close" aria-label="Close search">${icons.close}</button>`;
+    this.el.append(bar);
+    bar.addEventListener('pointerdown', (e) => e.stopPropagation());
+    bar.addEventListener('click', (e) => {
+      const f = e.target.closest('[data-f]');
+      if (!f) return;
+      const k = f.dataset.f;
+      if (k === 'prev' || k === 'next') this.#step(k === 'next' ? 1 : -1);
+      else if (k === 'list') this.openSearch();
+      else this.closeSearch();
+    });
     // Keep touches in the panel away from the page underneath.
     for (const t of ['pointerdown', 'wheel', 'touchstart']) p.addEventListener(t, (e) => e.stopPropagation(), { passive: true });
   }
 
   #openPanel(kind, title) {
+    if (this.panelKind === 'search' && kind !== 'search') this.#undock();
+    this.findBar.hidden = true;
     this.panelKind = kind;
     this.panel.dataset.kind = kind;
     this.panel.querySelector('h2').textContent = title;
     this.panel.hidden = false;
     this.closeFabMenu();
-    return this.panel.querySelector('.tp-body');
+    const body = this.panel.querySelector('.tp-body');
+    body.onclick = body.onpointerdown = null; // handlers of the previous panel
+    return body;
   }
 
   closePanel() {
+    if (this.panelKind === 'search') this.searchToken = (this.searchToken || 0) + 1;
     this.panel.hidden = true;
     this.panelKind = null;
-    this.searchToken = (this.searchToken || 0) + 1;
+    this.#undock();
   }
 
-  /** The panel would hide part of the page jumped to: close it (Search remembers its results). */
+  /** Search closed for good (from the small bar). */
+  closeSearch() {
+    this.findBar.hidden = true;
+    this.closePanel();
+  }
+
+  #undock() {
+    if (this.docked) {
+      this.docked = false;
+      this.panel.classList.remove('docked');
+      this.api.dock(0);
+    }
+  }
+
+  /** The panel would hide part of the page jumped to: close it. */
   #afterJump() {
     this.closePanel();
   }
@@ -94,6 +138,12 @@ export class ReaderTools {
 
   openSearch() {
     const body = this.#openPanel('search', 'Search');
+    // Wide screens: the book makes room and the results stay beside it.
+    if (window.innerWidth >= DOCK_MIN && !this.docked) {
+      this.docked = true;
+      this.panel.classList.add('docked');
+      this.api.dock(DOCK_W);
+    }
     body.innerHTML = `
       <label class="tp-search">${icons.search}<input type="search" enterkeyhint="search" placeholder="Words or a phrase" aria-label="Search this book" value="${esc(this.query)}"></label>
       <p class="tp-status" aria-live="polite"></p>
@@ -106,10 +156,8 @@ export class ReaderTools {
     });
     input.addEventListener('keydown', (e) => e.key === 'Enter' && (clearTimeout(t), this.#search(input.value), input.blur()));
     body.querySelector('.tp-results').addEventListener('click', (e) => {
-      const li = e.target.closest('[data-page]');
-      if (!li) return;
-      this.api.goToPage(+li.dataset.page, { find: this.query, nth: +li.dataset.nth });
-      this.#afterJump();
+      const li = e.target.closest('[data-k]');
+      if (li) this.#show(+li.dataset.k);
     });
     if (this.query) this.#search(this.query);
     else setTimeout(() => input.focus(), 60);
@@ -117,8 +165,11 @@ export class ReaderTools {
 
   async #search(q) {
     q = q.trim();
+    const keep = q === this.query ? this.current : -1; // reopened: stay on the match being read
     this.query = q;
     const token = (this.searchToken = (this.searchToken || 0) + 1);
+    this.results = [];
+    this.current = keep;
     const body = this.panel.querySelector('.tp-body');
     const list = body.querySelector('.tp-results');
     const status = body.querySelector('.tp-status');
@@ -151,12 +202,20 @@ export class ReaderTools {
         const b = Math.min(text.length, at + q.length + 70);
         const before = (a > 0 ? '…' : '') + text.slice(a, at);
         const after = text.slice(at + q.length, b) + (b < text.length ? '…' : '');
-        items.push(`<li data-page="${n}" data-nth="${nth}"><span class="tp-page">p. ${n}</span><span class="tp-snip" dir="auto">${esc(before)}<mark>${esc(text.slice(at, at + q.length))}</mark>${esc(after)}</span></li>`);
+        this.results.push({ page: n, nth });
+        items.push(`<li data-k="${this.results.length - 1}"><span class="tp-page">p. ${n}</span><span class="tp-snip" dir="auto">${esc(before)}<mark>${esc(text.slice(at, at + q.length))}</mark>${esc(after)}</span></li>`);
         nth++;
         found++;
         at = hay.indexOf(needle, at + needle.length);
       }
-      if (items.length) list.insertAdjacentHTML('beforeend', items.join(''));
+      if (items.length) {
+        list.insertAdjacentHTML('beforeend', items.join(''));
+        const here = this.current >= 0 && list.querySelector(`li[data-k="${this.current}"]:not(.current)`);
+        if (here) {
+          here.classList.add('current');
+          here.scrollIntoView({ block: 'center' });
+        }
+      }
     }
     if (token !== this.searchToken) return;
     status.textContent = found
@@ -164,6 +223,29 @@ export class ReaderTools {
       : this.texts.slice(1).every((t) => !t)
         ? 'This book has no searchable text (scanned pages)'
         : `No matches for “${q}”`;
+  }
+
+  /** Open match k: its page, the match marked. The results stay open (or shrink to the bar on phones). */
+  #show(k) {
+    const res = this.results && this.results[k];
+    if (!res) return;
+    this.current = k;
+    this.api.goToPage(res.page, { find: this.query, nth: res.nth });
+    for (const li of this.panel.querySelectorAll('.tp-results li.current')) li.classList.remove('current');
+    const li = this.panel.querySelector(`.tp-results li[data-k="${k}"]`);
+    if (li) li.classList.add('current');
+    if (!this.docked) {
+      this.panel.hidden = true;
+      this.panelKind = null;
+      this.findBar.hidden = false;
+    }
+    this.findBar.querySelector('.fb-count').textContent = `${k + 1} / ${this.results.length}`;
+    this.findBar.querySelector('.fb-q').textContent = this.query;
+  }
+
+  #step(d) {
+    if (!this.results || !this.results.length) return;
+    this.#show((this.current + d + this.results.length) % this.results.length);
   }
 
   // ---- bookmarks
@@ -181,35 +263,103 @@ export class ReaderTools {
     const had = this.isBookmarked(n);
     const list = had ? this.bookmarks.filter((b) => b.page !== n) : [...this.bookmarks, { page: n, at: Date.now() }].sort((a, b) => a.page - b.page);
     await this.#saveBookmarks(list);
-    this.api.toast(had ? `Bookmark removed · page ${n}` : `Bookmarked page ${n}`);
+    if (had) this.api.toast(`Bookmark removed · page ${n}`);
+    else this.#noteEditor(n, true);
+  }
+
+  /** A short note on a bookmark: why this page. */
+  #noteEditor(page, fresh) {
+    const b = this.bookmarks.find((x) => x.page === page);
+    if (!b) return;
+    const body = this.#openPanel('note', fresh ? `Bookmarked page ${page}` : `Bookmark · page ${page}`);
+    body.innerHTML = `
+      <label class="tp-note"><span>Why this page? (optional)</span><textarea rows="3" maxlength="200" dir="auto" placeholder="e.g. First time we meet Rem">${esc(b.note || '')}</textarea></label>
+      <div class="tp-actions"><button class="tp-btn quiet" data-n="skip">${fresh ? 'Skip' : 'Cancel'}</button><button class="tp-btn" data-n="save">Save</button></div>`;
+    const ta = body.querySelector('textarea');
+    setTimeout(() => ta.focus(), 80);
+    body.onclick = async (e) => {
+      const act = e.target.closest('[data-n]');
+      if (!act) return;
+      body.onclick = null;
+      if (act.dataset.n === 'save') {
+        const note = ta.value.trim();
+        await this.#saveBookmarks(this.bookmarks.map((x) => (x.page === page ? { ...x, note } : x)));
+      }
+      if (fresh) this.closePanel();
+      else this.openBookmarks();
+    };
   }
 
   async #saveBookmarks(list) {
     this.api.book.bookmarks = list;
     await updateBook(this.api.book.id, { bookmarks: list });
-    for (const p of this.el.querySelectorAll('.page[data-page]')) this.decoratePage(p, +p.dataset.page);
+    this.decorateAll();
     if (this.panelKind === 'bookmarks') this.openBookmarks();
     this.#renderFabMenu();
   }
 
-  /** Bookmarked pages carry a ribbon. */
+  decorateAll() {
+    for (const p of this.el.querySelectorAll('.page[data-page]')) this.decoratePage(p, +p.dataset.page);
+  }
+
+  /**
+   * Marks on a page: a red ribbon for a bookmark, a gold ribbon for the
+   * reading position (it slides in when it moves to a new page), and a small
+   * flag in the margin at the line where you stopped.
+   */
   decoratePage(pageEl, n) {
     pageEl.classList.toggle('bookmarked', this.isBookmarked(n));
+    const here = this.api.readingPos() === n;
+    if (here !== pageEl.classList.contains('reading-pos')) pageEl.classList.toggle('reading-pos', here);
+    const m = this.api.stopMark();
+    let flag = pageEl.querySelector('.stop-flag');
+    if (m && m.page === n) {
+      if (!flag) {
+        flag = document.createElement('span');
+        flag.className = 'stop-flag';
+        flag.innerHTML = icons.flag;
+        pageEl.append(flag);
+      }
+      flag.style.top = `${m.fy * 100}%`;
+      flag.classList.toggle('no-line', !m.line);
+    } else if (flag) flag.remove();
   }
 
   openBookmarks() {
     const body = this.#openPanel('bookmarks', 'Bookmarks');
     const list = this.bookmarks;
-    if (!list.length) {
-      body.innerHTML = `<div class="tp-empty">${icons.bookmark}<p>No bookmarks yet.</p><p class="muted">Use <b>Bookmark page</b> in the tools bubble to mark the page you're on.</p></div>`;
-      return;
-    }
-    const day = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-    body.innerHTML = `<ol class="tp-results bookmarks">${list
-      .map(
-        (b) => `<li data-page="${b.page}"><span class="tp-page">p. ${b.page}</span><span class="tp-snip" dir="auto">${esc(this.texts[b.page] ? this.texts[b.page].slice(0, 110) : '…')}</span><span class="tp-date">${day(b.at)}</span><button class="tp-del" data-del="${b.page}" aria-label="Remove bookmark on page ${b.page}">${icons.close}</button></li>`,
-      )
-      .join('')}</ol>`;
+    const pos = this.api.readingPos();
+    const stop = this.api.stopMark();
+    const day = (t) => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    const snip = (n) => esc(this.texts[n] ? this.texts[n].slice(0, 110) : '…');
+    body.innerHTML = `
+      <ol class="tp-results marks">
+        <li class="mk pos" data-go="pos"><span class="mk-ico">${icons.bookmark}</span><span class="mk-text"><b>Reading position</b><span class="mk-sub">Page ${pos} · follows you as you read</span></span></li>
+        <li class="mk stop" data-go="${stop ? 'stop' : 'place'}"><span class="mk-ico">${icons.flag}</span><span class="mk-text"><b>Where I stopped</b><span class="mk-sub" dir="auto">${
+          stop ? `Page ${stop.page}${stop.line ? ` · “${esc(stop.line.slice(0, 70))}${stop.line.length > 70 ? '…' : ''}”` : ' · spot only, no line recorded'}` : 'Not marked yet — tap to mark a line'
+        }</span></span>${stop ? `<button class="tp-del" data-mk="restop" aria-label="Mark a new spot">${icons.edit}</button>` : ''}</li>
+      </ol>
+      <h3 class="ed-h">Bookmarks</h3>
+      ${
+        list.length
+          ? `<ol class="tp-results bookmarks">${list
+              .map(
+                (b) => `<li data-page="${b.page}"><span class="tp-page">p. ${b.page}</span>${b.note ? `<span class="tp-note-text" dir="auto">${esc(b.note)}</span>` : ''}<span class="tp-snip" dir="auto">${snip(b.page)}</span><span class="tp-date">${day(b.at)} · <button class="tp-link" data-note="${b.page}">${b.note ? 'Edit note' : 'Add a note'}</button></span><button class="tp-del" data-del="${b.page}" aria-label="Remove bookmark on page ${b.page}">${icons.close}</button></li>`,
+              )
+              .join('')}</ol>`
+          : `<p class="tp-hint">No bookmarks yet. Use <b>Bookmark page</b> in the tools bubble to mark the page you're on.</p>`
+      }`;
+    body.querySelector('.marks').addEventListener('click', (e) => {
+      const li = e.target.closest('[data-go]');
+      if (e.target.closest('[data-mk="restop"]') || (li && li.dataset.go === 'place')) {
+        this.closePanel();
+        return this.api.placeStopMark();
+      }
+      if (!li) return;
+      this.closePanel();
+      if (li.dataset.go === 'pos') this.api.goToPage(pos);
+      else this.api.goToStop();
+    });
     // Fill in the first words of each page.
     list.forEach(async (b) => {
       if (this.texts[b.page] == null) {
@@ -222,7 +372,10 @@ export class ReaderTools {
       const snip = body.querySelector(`li[data-page="${b.page}"] .tp-snip`);
       if (snip) snip.textContent = this.texts[b.page].slice(0, 110) || 'No text on this page';
     });
-    body.querySelector('ol').addEventListener('click', (e) => {
+    const bl = body.querySelector('ol.bookmarks');
+    if (bl) bl.addEventListener('click', (e) => {
+      const note = e.target.closest('[data-note]');
+      if (note) return this.#noteEditor(+note.dataset.note, false);
       const del = e.target.closest('[data-del]');
       if (del) return this.#saveBookmarks(this.bookmarks.filter((b) => b.page !== +del.dataset.del));
       const li = e.target.closest('[data-page]');
@@ -277,6 +430,12 @@ export class ReaderTools {
         return this.toggleBookmark();
       case 'bookmarks':
         return this.openBookmarks();
+      case 'stopmark':
+        this.closePanel();
+        return this.api.placeStopMark();
+      case 'resume':
+        this.closePanel();
+        return this.api.goToStop();
       case 'contents':
         return this.openContents();
       case 'tone': {

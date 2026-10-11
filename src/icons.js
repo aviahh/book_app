@@ -28,6 +28,8 @@ export const icons = {
   wand: svg('<path d="M5 19L15.5 8.5"/><path d="M14 7l3 3"/><path d="M18.5 3v3"/><path d="M17 4.5h3"/><path d="M19.5 11.5v2"/><path d="M18.5 12.5h2"/><path d="M10 3.5v2"/><path d="M9 4.5h2"/>'),
   edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
   grip: svg('<circle cx="9" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.2" fill="currentColor" stroke="none"/>'),
+  flag: svg('<path d="M5 21V4"/><path d="M5 4.5h11.5l-2.5 4 2.5 4H5"/>'),
+  flagGo: svg('<path d="M5 21V4"/><path d="M5 4.5h11.5l-2.5 4 2.5 4H5"/><path d="M14 17.5h6"/><path d="M17.5 15l2.5 2.5-2.5 2.5"/>'),
   minus: svg('<path d="M6 12h12"/>'),
   stop: svg('<rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor"/>'),
   copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/>'),
