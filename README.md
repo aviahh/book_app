@@ -34,7 +34,7 @@ Then on the iPad open the site in Safari → Share → **Add to Home Screen**.
 | **Reader** | Landscape: cover alone, then two-page spreads with a spine gradient and a realistic page curl (swipe from the page edge). Portrait: pages scroll vertically. Pinch to zoom and drag to pan in both; full screen while reading; fading side arrows (tap to reveal, tap again to turn — or single-tap mode in Settings); auto-hiding toolbar. |
 | **Toolbar** | Thumbnails strip · first / −N / −1 · page indicator (tap to type a page) · +1 / +N / last · read aloud · orientation lock. |
 | **Words** | Press and hold a word → translation bubble with pronunciation and copy (Google Translate). Double-tap zooms in, and double-tap again zooms back out. |
-| **Read aloud** | Tap the speaker, drag across text; Google's voice starts streaming immediately; pause / resume / stop. |
+| **Read aloud** | Tap the speaker, then tap a word to read on from there — sentence by sentence, highlighted as it is read, turning pages by itself (the screen stays on) — or drag across a passage to read just that; pause / back a sentence / stop. |
 | **Settings** | Arrow tap behaviour, jump size, page-turn effect, toolbar position, hide delay, page tone (original / warm / night), surroundings, translation and speech languages. |
 
 Books are stored privately in the browser's storage on the device (IndexedDB).

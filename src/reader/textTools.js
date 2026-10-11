@@ -132,3 +132,95 @@ export function rangeText(spans, a, b) {
   }
   return out.replace(/\s+/g, ' ').trim();
 }
+
+/**
+ * A page's text for reading aloud, and where each character came from.
+ * Lines are joined the way rangeText joins them (a space, or re-joined
+ * hyphenated words), whitespace is collapsed, and a lone page number at the
+ * top or bottom of the page is left out.
+ * Returns { text, map } with map[k] = { index, offset } into `spans` (or null
+ * for a joining space).
+ */
+export function pageText(spans, layerRect) {
+  const chars = [];
+  const map = [];
+  let prevRect = null;
+  for (let i = 0; i < spans.length; i++) {
+    const t = spans[i].textContent;
+    const rect = spans[i].getBoundingClientRect();
+    if (layerRect && /^\s*[\divxlc]{1,4}\s*$/i.test(t)) {
+      const y = (rect.top + rect.bottom) / 2 - layerRect.top;
+      if (y < layerRect.height * 0.09 || y > layerRect.height * 0.91) continue; // a running page number
+    }
+    if (chars.length && prevRect) {
+      const newLine = Math.abs(rect.top - prevRect.top) > rect.height * 0.5 || (spans[i - 1] && spans[i - 1].nextSibling && spans[i - 1].nextSibling.nodeName === 'BR');
+      if (newLine) {
+        const n = chars.length;
+        if (n > 1 && chars[n - 1] === '-' && /[A-Za-z]/.test(chars[n - 2])) {
+          chars.pop();
+          map.pop();
+        } else if (!/\s/.test(chars[n - 1])) {
+          chars.push(' ');
+          map.push(null);
+        }
+      }
+    }
+    for (let o = 0; o < t.length; o++) {
+      chars.push(t[o]);
+      map.push({ index: i, offset: o });
+    }
+    prevRect = rect;
+  }
+  // Collapse whitespace (keeping the map in step) and trim.
+  let text = '';
+  const out = [];
+  for (let k = 0; k < chars.length; k++) {
+    const ws = /\s/.test(chars[k]);
+    if (ws && (!text.length || text[text.length - 1] === ' ')) continue;
+    text += ws ? ' ' : chars[k];
+    out.push(map[k]);
+  }
+  if (text.endsWith(' ')) {
+    text = text.slice(0, -1);
+    out.pop();
+  }
+  return { text, map: out };
+}
+
+/**
+ * Split text into sentences of at most `max` characters (longer sentences at
+ * a clause, else a word), as [start, end) offsets, starting at `from`.
+ */
+export function sentenceRanges(text, from = 0, max = 180) {
+  const out = [];
+  let s = from;
+  while (s < text.length && text[s] === ' ') s++;
+  while (s < text.length) {
+    const window = text.slice(s, s + max + 1);
+    let cut = -1;
+    if (s + max >= text.length) {
+      // The rest fits: still stop at the first sentence end.
+      const m = /[.!?…]["'”’)\]]*\s/.exec(window);
+      cut = m ? m.index + m[0].length : window.length;
+    } else {
+      const m = /[.!?…]["'”’)\]]*\s/.exec(window);
+      if (m) cut = m.index + m[0].length;
+      else {
+        for (const re of [/[,;:—–]\s/g, /\s/g]) {
+          let mm;
+          re.lastIndex = 0;
+          while ((mm = re.exec(window))) if (mm.index > 30) cut = mm.index + mm[0].length;
+          if (cut > 0) break;
+        }
+      }
+      if (cut <= 0) cut = max;
+    }
+    let e = s + cut;
+    let t = e;
+    while (t > s && text[t - 1] === ' ') t--;
+    if (t > s) out.push([s, t]);
+    s = e;
+    while (s < text.length && text[s] === ' ') s++;
+  }
+  return out;
+}

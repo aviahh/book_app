@@ -349,6 +349,24 @@
   mix-blend-mode: multiply;
   border-radius: 2px;
 }
+.hl.speak {
+  background: rgba(255, 190, 40, 0.3);
+  mix-blend-mode: multiply;
+  border-radius: 2px;
+  transition: opacity 0.2s;
+}
+.reader[data-tone='night'] .hl.speak {
+  mix-blend-mode: screen;
+  background: rgba(255, 190, 40, 0.26);
+}
+/* A page's text, laid out unseen, for reading ahead */
+.tts-scratch {
+  position: absolute;
+  left: -300vw;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
 .reader[data-tone='night'] .hl.sel {
   mix-blend-mode: screen;
   background: rgba(255, 190, 40, 0.3);
@@ -638,6 +656,21 @@
   animation: pill-in 0.25s ease;
   max-width: calc(100% - 32px);
 }
+.tts-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Narrow screens: while reading, the wave says it all; the buttons get the room. */
+@media (max-width: 460px) {
+  .tts-bar:not([data-state='ready']) .tts-label {
+    display: none;
+  }
+  .tts-bar {
+    gap: 10px;
+  }
+}
 .reader.toolbar-top .tts-bar {
   top: auto;
   bottom: calc(18px + var(--safe-bottom));
@@ -681,6 +714,7 @@
 }
 .tts-bar[data-state='ready'] .tts-wave,
 .tts-bar[data-state='ready'] [data-act='ttsToggle'],
+.tts-bar[data-state='ready'] [data-act='ttsBack'],
 .tts-bar[data-state='ready'] [data-act='ttsStop'] {
   display: none;
 }

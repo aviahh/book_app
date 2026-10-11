@@ -16,7 +16,7 @@ import { FoldFlipper } from './foldFlipper.js';
 import { BendFlipper } from './bendFlipper.js';
 import { Camera } from './camera.js';
 import { spreadCount, spreadOf, spreadPages, visiblePages, spreadLabel } from './spreads.js';
-import { collectSpans, hitTest, wordAt, selectableAt, rangeRects, rangeText } from './textTools.js';
+import { collectSpans, hitTest, wordAt, selectableAt, rangeRects, rangeText, pageText, sentenceRanges } from './textTools.js';
 import { OrientationLock } from './orientation.js';
 import { ThumbStrip } from './thumbs.js';
 
@@ -102,7 +102,7 @@ class Reader {
     this.pointers = new Map();
     this.stripPages = new Map();
     this.cleanups = [];
-    this.speech = new Speech({ onState: (s) => this.#onSpeechState(s), voice: () => this.settings.speechVoice });
+    this.speech = new Speech({ onState: (s) => this.#onSpeechState(s), onPiece: (i) => this.#onPiece(i), voice: () => this.settings.speechVoice });
     this.#build();
     this.camera = new Camera(this.cameraEl, () => this.#onCamera());
     this.lock = new OrientationLock(this.el, () => this.#layout());
@@ -174,7 +174,8 @@ class Reader {
       <button class="zoom-chip" data-act="resetZoom" hidden aria-label="Reset zoom"></button>
       <div class="tts-bar" hidden role="group" aria-label="Read aloud" data-state="ready">
         <span class="tts-wave"><i></i><i></i><i></i><i></i></span>
-        <span class="tts-label" aria-live="polite">Select a passage to read</span>
+        <span class="tts-label" aria-live="polite">Tap where to start reading</span>
+        <button data-act="ttsBack" class="tts-btn" aria-label="Back a sentence">${icons.rewind}</button>
         <button data-act="ttsToggle" class="tts-btn" aria-label="Pause">${icons.pause}</button>
         <button data-act="ttsStop" class="tts-btn" aria-label="Stop">${icons.stop}</button>
         <span class="tts-sep"></span>
@@ -1194,6 +1195,8 @@ class Reader {
         return this.speech.toggle();
       case 'ttsStop':
         return this.speech.stop();
+      case 'ttsBack':
+        return this.speech.back();
       case 'popSpeak': {
         const cur = this.popSound && this.popSound.state;
         if (cur === 'loading') return; // already on its way: extra taps don't queue more
@@ -1526,7 +1529,7 @@ class Reader {
       // A plain tap on text is still a tap (toolbar / double-tap zoom).
       if (!ptr.moved) {
         this.sel = null;
-        if (!cancelled && performance.now() - ptr.t0 < 600) this.#tap(ptr);
+        if (!cancelled && performance.now() - ptr.t0 < 600 && !this.#readFrom(ptr)) this.#tap(ptr);
         return;
       }
       return this.#selectEnd(e, cancelled);
@@ -2149,7 +2152,163 @@ class Reader {
       return this.#toast('No text selected — this page may be a scanned image');
     }
     const lang = this.settings.speechLang === 'auto' ? guessLang(text) : this.settings.speechLang;
+    this.aloud = null; // just this passage
     this.speech.speak(text, lang); // inside the gesture, so mobile browsers allow audio
+  }
+
+  // ---- continuous reading: from a tapped word on, page after page
+
+  /** The text of page n as shown on screen, with the map back to its spans (null if not there yet). */
+  #shownPageText(n) {
+    const root = this.mode === 'single' ? this.stripEl : this.bookEl;
+    const layer = root.querySelector(`.slot .page[data-page="${n}"] .textLayer`);
+    const spans = layer ? collectSpans([layer]) : [];
+    if (!spans.length) return null;
+    return { spans, ...pageText(spans, layer.getBoundingClientRect()) };
+  }
+
+  /** The text of page n, read from a hidden text layer (pages not on screen yet). */
+  async #pageTextOf(n) {
+    const r = this.aloud;
+    if (r.texts.has(n)) return r.texts.get(n);
+    const shown = this.#shownPageText(n);
+    let text = shown ? shown.text : null;
+    if (text == null) {
+      const page = await this.cache.page(n);
+      const box = document.createElement('div');
+      box.className = 'page tts-scratch';
+      box.style.width = `${this.pw}px`;
+      box.style.height = `${this.ph}px`;
+      const tl = document.createElement('div');
+      tl.className = 'textLayer';
+      box.append(tl);
+      this.el.append(box);
+      try {
+        await buildTextLayer(page, tl, this.pw);
+        text = pageText(collectSpans([tl]), tl.getBoundingClientRect()).text;
+      } catch (e) {
+        text = '';
+      } finally {
+        box.remove();
+      }
+    }
+    r.texts.set(n, text);
+    for (const k of r.texts.keys()) if (k < n - 2) r.texts.delete(k);
+    return text;
+  }
+
+  /**
+   * The next sentences to read (the speech player asks for more as it goes).
+   * A sentence that runs on over a page break is read in one piece.
+   */
+  async #feedAloud(r) {
+    if (r !== this.aloud) return null;
+    for (let tries = 0; tries < 40; tries++) {
+      if (r.page > this.total) return null;
+      const text = await this.#pageTextOf(r.page);
+      const ranges = sentenceRanges(text, r.offset);
+      if (!ranges.length) {
+        r.page++;
+        r.offset = 0;
+        continue;
+      }
+      const segs = ranges.map(([s, e]) => ({ parts: [{ page: r.page, s, e }], text: text.slice(s, e) }));
+      const last = segs[segs.length - 1];
+      const page = r.page;
+      r.page++;
+      r.offset = 0;
+      // The page ends mid-sentence: finish the sentence from the next page.
+      if (!/[.!?…]["'”’)\]]*$/.test(last.text) && page < this.total) {
+        const next = await this.#pageTextOf(page + 1);
+        const first = sentenceRanges(next, 0)[0];
+        if (first && last.text.length + first[1] - first[0] < 185) {
+          const tail = next.slice(first[0], first[1]);
+          last.text = /[A-Za-z]-$/.test(last.text) ? last.text.slice(0, -1) + tail : `${last.text} ${tail}`;
+          last.parts.push({ page: page + 1, s: first[0], e: first[1] });
+          r.offset = first[1];
+        }
+      }
+      if (r !== this.aloud) return null;
+      r.segs.push(...segs);
+      return segs.map((x) => x.text);
+    }
+    return null;
+  }
+
+  /** A tap on text in read-aloud mode: read from that word on. Returns whether it did. */
+  #readFrom(ptr) {
+    if (!this.readMode) return false;
+    const spans = collectSpans(this.#textLayers());
+    const pos = hitTest(spans, ptr.cx0, ptr.cy0, { mode: 'char', maxDist: 14 });
+    if (!pos) return false;
+    const unit = selectableAt(spans, pos);
+    const start = unit ? unit.a : pos;
+    const span = spans[start.index];
+    const pageEl = span.closest('.page');
+    const n = pageEl && +pageEl.dataset.page;
+    const shown = n && this.#shownPageText(n);
+    if (!shown) return false;
+    const local = shown.spans.indexOf(span);
+    let k = shown.map.findIndex((m) => m && m.index === local && m.offset >= start.offset);
+    if (k < 0) k = shown.map.findIndex((m) => m && m.index > local);
+    if (k < 0) return false;
+    const r = (this.aloud = { page: n, offset: k, segs: [], texts: new Map([[n, shown.text]]) });
+    const lang = this.settings.speechLang === 'auto' ? guessLang(shown.text.slice(k, k + 400) || shown.text) : this.settings.speechLang;
+    this.speech.speakFeed(() => this.#feedAloud(r), lang); // inside the tap, so mobile browsers allow audio
+    return true;
+  }
+
+  /** A sentence starts: show its page (turning pages as needed) and highlight it. */
+  async #onPiece(i) {
+    const r = this.aloud;
+    const seg = r && r.segs[i];
+    if (!seg) return;
+    if (i > 12) r.segs[i - 12] = null; // keep only a little behind
+    const token = (this.pieceToken = (this.pieceToken || 0) + 1);
+    const n = seg.parts[0].page;
+    if (this.mode === 'double') {
+      const shown = visiblePages(spreadPages('double', this.spread, this.total));
+      if (!shown.includes(n) && !this.busy) await this.go(spreadOf('double', n));
+    } else if (!this.#shownPageText(n)) {
+      this.#scrollToPage(n);
+    }
+    // The page's text layer may still be building after a turn.
+    for (let t = 0; t < 30 && token === this.pieceToken && !this.#shownPageText(n); t++) await new Promise((res) => setTimeout(res, 100));
+    if (token !== this.pieceToken || !this.speech.active) return;
+    const rects = [];
+    for (const part of seg.parts) {
+      const shown = this.#shownPageText(part.page);
+      if (!shown) continue;
+      let s = part.s;
+      let e = part.e;
+      const want = r.texts.get(part.page);
+      // Locate the sentence again if this page's text came out differently.
+      if (want != null && shown.text !== want) {
+        const at = shown.text.indexOf(want.slice(s, e));
+        if (at < 0) continue;
+        e = at + (e - s);
+        s = at;
+      }
+      let a = s;
+      while (a < e && !shown.map[a]) a++;
+      let b = e - 1;
+      while (b > a && !shown.map[b]) b--;
+      if (a >= e || !shown.map[b]) continue;
+      const end = { index: shown.map[b].index, offset: shown.map[b].offset + 1 };
+      rects.push(...rangeRects(shown.spans, shown.map[a], end));
+    }
+    if (!rects.length) return;
+    this.#drawHighlights(rects, 'speak');
+    // One-page scroll: keep the sentence in view, about a third down the screen.
+    if (this.mode === 'single') {
+      const top = Math.min(...rects.map((x) => x.top));
+      const bottom = Math.max(...rects.map((x) => x.bottom));
+      const box = this.el.getBoundingClientRect();
+      if (top < box.top + this.H * 0.12 || bottom > box.top + this.H * 0.8) {
+        const cam = this.camera;
+        cam.animateTo(cam.s, cam.tx, cam.ty + (box.top + this.H * 0.3 - top), 500);
+      }
+    }
   }
 
   #onSpeechState(state) {
@@ -2161,10 +2320,13 @@ class Reader {
       // The bar stays while read-aloud mode is on, waiting for the next passage.
       bar.hidden = !this.readMode;
       bar.dataset.state = 'ready';
-      bar.querySelector('.tts-label').textContent = 'Select a passage to read';
+      bar.querySelector('.tts-label').textContent = 'Tap where to start reading';
+      this.aloud = null;
+      this.#keepAwake(false);
       return;
     }
     this.speechWasActive = true;
+    this.#keepAwake(true);
     bar.hidden = false;
     bar.dataset.state = state;
     btn.innerHTML = state === 'paused' ? icons.play : icons.pause;
@@ -2172,6 +2334,16 @@ class Reader {
     // Say so when the chosen voice couldn't be reached and another one is reading.
     const other = this.speech.fellBack ? (this.speech.usingFallback ? ' · device voice' : ' · Google voice') : '';
     bar.querySelector('.tts-label').textContent = (state === 'loading' ? 'Preparing…' : state === 'paused' ? 'Paused' : 'Reading aloud') + other;
+  }
+
+  /** Keep the screen on while reading aloud (where the browser allows it). */
+  #keepAwake(on) {
+    if (on && !this.wakeLock && navigator.wakeLock) {
+      this.wakeLock = navigator.wakeLock.request('screen').catch(() => null);
+    } else if (!on && this.wakeLock) {
+      this.wakeLock.then((l) => l && l.release()).catch(() => {});
+      this.wakeLock = null;
+    }
   }
 
   // ------------------------------------------------------------------ teardown
@@ -2190,6 +2362,7 @@ class Reader {
     // Leaving for Settings keeps full screen; leaving the book ends it.
     if (!location.hash.startsWith('#/settings')) exitFullscreen();
     this.speech.stop(true);
+    this.#keepAwake(false);
     this.lock.destroy();
     this.thumbs.destroy();
     for (const fn of this.cleanups) fn();

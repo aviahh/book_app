@@ -201,12 +201,23 @@ const NEEDS_UNLOCK = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.pla
  * The Microsoft voice is downloaded piece by piece and played from memory
  * (blob URLs): iOS Safari refuses to play audio straight from a server that
  * streams it without byte-range support, which our voice relay does. The
- * first piece is short, so playback still starts quickly, and the next piece
- * downloads while the current one plays.
+ * first piece is short, so playback still starts quickly, and the next pieces
+ * download while the current one plays.
+ *
+ * Two ways to use it:
+ *  - speak(text): one passage, split into pieces here;
+ *  - speakFeed(feed): continuous reading. `feed()` resolves with the next
+ *    pieces (sentences, each short enough for every voice) or null at the
+ *    end; it is asked for more while earlier pieces play. `onPiece(i)` hears
+ *    each piece as it starts, so the reader can highlight it and turn pages.
+ *    Only the last few pieces are kept for rewinding (back()).
  */
+const KEEP_BACK = 3; // pieces kept behind the current one (a few lines)
+
 export class Speech {
-  constructor({ onState, voice = () => 'microsoft' } = {}) {
+  constructor({ onState, voice = () => 'microsoft', onPiece } = {}) {
     this.onState = onState || (() => {});
+    this.onPiece = onPiece || (() => {});
     this.voicePref = voice;
     // Two elements: one plays while the other holds the next piece.
     this.players = [new Audio(), new Audio()];
@@ -218,6 +229,8 @@ export class Speech {
     this.state = 'idle';
     this.gen = 0;
     this.blobs = new Map();
+    this.chunks = [];
+    this.index = 0;
   }
 
   get active() {
@@ -243,14 +256,56 @@ export class Speech {
     }
   }
 
-  speak(text, lang) {
+  #begin(lang) {
     this.stop(true);
     this.unlock(); // in case this call is itself inside a tap
     this.lang = lang;
     this.providers = providersFor(lang, this.voicePref());
     this.preferred = this.providers[0];
+    this.provider = this.providers[0];
     this.usingFallback = false;
-    this.#start(text);
+  }
+
+  speak(text, lang) {
+    this.#begin(lang);
+    this.feed = null;
+    this.feedDone = true;
+    this.chunks = chunkText(text, LIMITS[this.provider], Math.min(LIMITS[this.provider], 160));
+    this.#playFrom(0);
+  }
+
+  /** Continuous reading: pieces come from `feed` as needed (see above). */
+  speakFeed(feed, lang) {
+    this.#begin(lang);
+    this.feed = feed;
+    this.feedDone = false;
+    this.feeding = null;
+    this.chunks = [];
+    this.#playFrom(0);
+  }
+
+  /** Make sure piece i exists, asking the feed for more if needed. */
+  async #ensure(i) {
+    // Pieces belong to the reading (session), not to one playback attempt:
+    // a rewind or a voice switch mid-request still keeps what arrives.
+    const gen = this.gen;
+    while (i >= this.chunks.length && !this.feedDone) {
+      const session = this.session;
+      if (!this.feeding) {
+        this.feeding = Promise.resolve()
+          .then(() => this.feed())
+          .catch(() => null)
+          .then((more) => {
+            if (session !== this.session) return;
+            this.feeding = null;
+            if (more && more.length) this.chunks.push(...more);
+            else this.feedDone = true;
+          });
+      }
+      await this.feeding;
+      if (gen !== this.gen) return false;
+    }
+    return i < this.chunks.length && this.chunks[i] != null;
   }
 
   /** A playable URL for piece i: a downloaded blob for the Microsoft voice, the direct address for Google's. */
@@ -275,42 +330,80 @@ export class Speech {
     return this.blobs.get(i);
   }
 
-  #freeBlobs() {
-    for (const p of this.blobs.values()) p.then((u) => u.indexOf('blob:') === 0 && URL.revokeObjectURL(u), () => {});
-    this.blobs = new Map();
+  #freeBlobs(keep = () => false) {
+    for (const [i, p] of [...this.blobs]) {
+      if (keep(i)) continue;
+      p.then((u) => u.indexOf('blob:') === 0 && URL.revokeObjectURL(u), () => {});
+      this.blobs.delete(i);
+    }
   }
 
-  #load(player, i, gen) {
-    return this.#src(i).then((url) => {
-      if (gen !== this.gen) return false;
-      player.dataset.real = '1';
-      player.src = url;
-      player.load();
-      return true;
-    });
+  /** Forget what lies more than a few pieces behind (audio, and the text of a continuous reading). */
+  #forgetOld() {
+    const first = this.index - KEEP_BACK;
+    this.#freeBlobs((i) => i >= first);
+    if (this.feed) for (let i = Math.max(0, first - 4); i < first; i++) this.chunks[i] = null;
   }
 
-  /** (Re)start playback of `text` with the current best provider. */
-  async #start(text) {
+  async #load(player, i, gen) {
+    if (!(await this.#ensure(i))) return false;
+    const url = await this.#src(i);
+    if (gen !== this.gen) return false;
+    player.dataset.real = '1';
+    player.src = url;
+    player.load();
+    return true;
+  }
+
+  /** Download the piece after next too (Microsoft voice), so a slow reply never leaves a gap. */
+  #prefetch(i, gen) {
+    if (this.provider !== 'edge') return;
+    this.#ensure(i).then((ok) => ok && gen === this.gen && this.#src(i).catch(() => {}));
+  }
+
+  /** (Re)start playback at piece i with the current provider. */
+  async #playFrom(i) {
     const gen = ++this.gen;
-    this.#freeBlobs();
-    this.provider = this.providers[0];
-    this.chunks = chunkText(text, LIMITS[this.provider], Math.min(LIMITS[this.provider], 160));
-    if (!this.chunks.length) return this.#set('idle', true);
-    this.index = 0;
+    for (const a of this.players) {
+      delete a.dataset.real;
+      a.pause();
+    }
+    this.index = i;
     this.cur = 0;
     this.#set('loading');
     const [a, b] = this.players;
     try {
-      if (!(await this.#load(a, 0, gen))) return;
+      if (!(await this.#load(a, i, gen))) {
+        if (gen === this.gen) this.#set('idle', true);
+        return;
+      }
     } catch (e) {
       if (gen === this.gen) this.#onError();
       return;
     }
-    if (this.chunks[1]) this.#load(b, 1, gen).catch(() => {});
+    if (gen !== this.gen) return;
+    this.#load(b, i + 1, gen).catch(() => {});
+    this.#prefetch(i + 2, gen);
+    this.onPiece(i);
     a.play()
       .then(() => gen === this.gen && this.state === 'loading' && this.#set('playing'))
       .catch((e) => gen === this.gen && this.#playFailed(e));
+  }
+
+  /** Back one piece, or to the start of this one if it has been playing a while. */
+  back() {
+    if (!this.active || this.usingFallback) return;
+    const a = this.players[this.cur];
+    if (a.currentTime > 2.5 || !this.canGoBack) {
+      a.currentTime = 0;
+      if (this.state === 'paused') this.resume();
+      return;
+    }
+    this.#playFrom(this.index - 1);
+  }
+
+  get canGoBack() {
+    return this.index > 0 && this.chunks[this.index - 1] != null;
   }
 
   pause() {
@@ -334,6 +427,7 @@ export class Speech {
     const wasActive = this.state !== 'idle';
     this.state = 'idle'; // first, so resetting the players can't trigger fallbacks
     this.gen++;
+    this.session = (this.session || 0) + 1;
     for (const a of this.players) {
       delete a.dataset.real;
       a.pause();
@@ -341,6 +435,7 @@ export class Speech {
       a.load();
     }
     this.#freeBlobs();
+    this.feeding = null;
     if (this.usingFallback) speechSynthesis.cancel();
     this.usingFallback = false;
     if (!silent && wasActive) this.#set('idle');
@@ -350,23 +445,27 @@ export class Speech {
     if (this.state === 'idle' || this.usingFallback) return;
     const gen = this.gen;
     this.index++;
-    if (this.index >= this.chunks.length) return this.#set('idle', true);
     const next = this.players[1 - this.cur];
     this.cur = 1 - this.cur;
     // Normally already loaded while the previous piece played; wait if not.
     try {
-      if (!next.dataset.real) await this.#load(next, this.index, gen);
+      if (!next.dataset.real && !(await this.#load(next, this.index, gen))) {
+        if (gen === this.gen) this.#set('idle', true);
+        return;
+      }
     } catch (e) {
       if (gen === this.gen) this.#onError();
       return;
     }
     if (gen !== this.gen) return;
+    this.onPiece(this.index);
     next.play().catch((e) => gen === this.gen && this.#playFailed(e));
     // Fetch the following piece into the element that just finished.
-    const after = this.index + 1;
     const spare = this.players[1 - this.cur];
     delete spare.dataset.real;
-    if (after < this.chunks.length) this.#load(spare, after, gen).catch(() => {});
+    this.#load(spare, this.index + 1, gen).catch(() => {});
+    this.#prefetch(this.index + 2, gen);
+    this.#forgetOld();
   }
 
   /** True when this passage is not in the chosen voice (it had to fall back). */
@@ -385,19 +484,35 @@ export class Speech {
   // provider (Microsoft → Google), and finally the device's own voice.
   #onError() {
     if (this.state === 'idle' || this.usingFallback) return;
-    const rest = this.chunks.slice(this.index).join(' ');
     for (const a of this.players) a.pause();
     this.providers = this.providers.slice(1);
-    if (this.providers.length) return this.#start(rest);
+    this.#freeBlobs();
+    if (this.providers.length) {
+      this.provider = this.providers[0];
+      // A passage split for the Microsoft voice has longer pieces than Google takes.
+      if (!this.feed) this.chunks = this.chunks.slice(0, this.index).concat(chunkText(this.chunks.slice(this.index).join(' '), LIMITS[this.provider]));
+      return this.#playFrom(this.index);
+    }
     if (!('speechSynthesis' in window)) return this.#set('idle', true);
     this.gen++;
     this.usingFallback = true;
-    const u = new SpeechSynthesisUtterance(rest);
-    u.lang = this.lang === 'iw' ? 'he-IL' : this.lang;
-    u.onend = () => this.usingFallback && this.#set('idle', true);
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
     this.#set('playing');
+    speechSynthesis.cancel();
+    this.#deviceSay(this.index, this.gen);
+  }
+
+  /** The device's own voice, piece by piece. */
+  async #deviceSay(i, gen) {
+    if (!(await this.#ensure(i)) || gen !== this.gen) {
+      if (gen === this.gen) this.#set('idle', true);
+      return;
+    }
+    this.index = i;
+    this.onPiece(i);
+    const u = new SpeechSynthesisUtterance(this.chunks[i]);
+    u.lang = this.lang === 'iw' ? 'he-IL' : this.lang;
+    u.onend = () => this.usingFallback && gen === this.gen && this.#deviceSay(i + 1, gen);
+    speechSynthesis.speak(u);
   }
 
   #set(state, finished = false) {
