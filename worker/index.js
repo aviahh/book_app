@@ -7,7 +7,10 @@
 // and this Worker opens the service's WebSocket, forwards the request, and
 // streams the MP3 back as it arrives — playback starts within a moment.
 //
+// Sync (accounts and reading data) lives in sync.js.
 // Everything else is served straight from the static app (see wrangler.jsonc).
+
+import { handleSync } from './sync.js';
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 const CHROMIUM_FULL_VERSION = '143.0.3650.75';
@@ -144,8 +147,10 @@ async function attempt(text, voice, rate) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
+    const synced = await handleSync(request, env);
+    if (synced) return synced;
     if (url.pathname !== '/api/tts') return new Response('Not found', { status: 404 });
     // Only serve the app itself, not other websites.
     const site = request.headers.get('Sec-Fetch-Site');

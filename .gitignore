@@ -12,3 +12,4 @@ reference/
 .claude/
 *.log
 .wrangler/
+.dev.vars
