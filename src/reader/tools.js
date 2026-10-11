@@ -109,16 +109,24 @@ export class ReaderTools {
   }
 
   closePanel() {
-    if (this.panelKind === 'search') this.searchToken = (this.searchToken || 0) + 1;
+    const wasSearch = this.panelKind === 'search';
+    if (wasSearch) this.searchToken = (this.searchToken || 0) + 1;
     this.panel.hidden = true;
     this.panelKind = null;
     this.#undock();
+    if (wasSearch && this.findBar.hidden) this.api.searchClosed();
+  }
+
+  /** Search is open: its panel, or (phones) its small bar. */
+  get searchActive() {
+    return this.panelKind === 'search' || !this.findBar.hidden;
   }
 
   /** Search closed for good (from the small bar). */
   closeSearch() {
     this.findBar.hidden = true;
-    this.closePanel();
+    if (this.panelKind === 'search') this.closePanel();
+    else this.api.searchClosed();
   }
 
   #undock() {
@@ -309,8 +317,6 @@ export class ReaderTools {
    */
   decoratePage(pageEl, n) {
     pageEl.classList.toggle('bookmarked', this.isBookmarked(n));
-    const here = this.api.readingPos() === n;
-    if (here !== pageEl.classList.contains('reading-pos')) pageEl.classList.toggle('reading-pos', here);
     const m = this.api.stopMark();
     let flag = pageEl.querySelector('.stop-flag');
     if (m && m.page === n) {
@@ -337,7 +343,7 @@ export class ReaderTools {
         <li class="mk pos" data-go="pos"><span class="mk-ico">${icons.bookmark}</span><span class="mk-text"><b>Reading position</b><span class="mk-sub">Page ${pos} · follows you as you read</span></span></li>
         <li class="mk stop" data-go="${stop ? 'stop' : 'place'}"><span class="mk-ico">${icons.flag}</span><span class="mk-text"><b>Where I stopped</b><span class="mk-sub" dir="auto">${
           stop ? `Page ${stop.page}${stop.line ? ` · “${esc(stop.line.slice(0, 70))}${stop.line.length > 70 ? '…' : ''}”` : ' · spot only, no line recorded'}` : 'Not marked yet — tap to mark a line'
-        }</span></span>${stop ? `<button class="tp-del" data-mk="restop" aria-label="Mark a new spot">${icons.edit}</button>` : ''}</li>
+        }</span></span>${stop ? `<button class="tp-del mk-edit" data-mk="restop" aria-label="Mark a new spot">${icons.edit}</button><button class="tp-del" data-mk="unstop" aria-label="Remove where I stopped">${icons.close}</button>` : ''}</li>
       </ol>
       <h3 class="ed-h">Bookmarks</h3>
       ${
@@ -351,6 +357,7 @@ export class ReaderTools {
       }`;
     body.querySelector('.marks').addEventListener('click', (e) => {
       const li = e.target.closest('[data-go]');
+      if (e.target.closest('[data-mk="unstop"]')) return this.api.clearStopMark().then(() => this.openBookmarks());
       if (e.target.closest('[data-mk="restop"]') || (li && li.dataset.go === 'place')) {
         this.closePanel();
         return this.api.placeStopMark();
@@ -521,6 +528,14 @@ export class ReaderTools {
       if (!this.fabMenu.hidden && !this.fabMenu.contains(e.target) && !this.fab.contains(e.target)) this.closeFabMenu();
     };
     document.addEventListener('pointerdown', this.outside, true);
+    this.outsidePanel = (e) => {
+      if (this.panel.hidden || this.panelKind === 'note' || this.panelKind === 'editor') return;
+      const t = e.target;
+      if (this.panel.contains(t) || this.fab.contains(t) || this.fabMenu.contains(t) || this.findBar.contains(t)) return;
+      if (t.closest && t.closest('.return-pill')) return;
+      this.closePanel();
+    };
+    document.addEventListener('pointerdown', this.outsidePanel, true);
   }
 
   /** Show or hide the bubble (Settings). */
@@ -701,5 +716,6 @@ export class ReaderTools {
 
   destroy() {
     document.removeEventListener('pointerdown', this.outside, true);
+    document.removeEventListener('pointerdown', this.outsidePanel, true);
   }
 }

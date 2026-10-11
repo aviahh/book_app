@@ -1863,21 +1863,46 @@ html.reading body {
   cursor: crosshair;
 }
 
-/* Reading position: a gold ribbon that slides in on its page */
-.page.reading-pos::before {
-  content: '';
+/* Reading position: a gold ribbon over the page being read. It slides in
+   on a new page, sticks to the top of the screen when zoomed past the top
+   of the page, and a press and hold marks where you stopped. */
+.pos-ribbon {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 22;
+  width: 34px; /* a comfortable touch target around the slim ribbon */
+  height: 52px;
+  padding: 0;
+  background: none;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.pos-ribbon[hidden] {
+  display: none;
+}
+.pos-ribbon i {
   position: absolute;
   top: 0;
-  right: calc(8% + 22px);
-  z-index: 3;
-  width: 14px;
-  height: 30px;
-  background: linear-gradient(#e2b77f, #c0904f);
+  left: 9px;
+  width: 16px;
+  height: 34px;
+  background: linear-gradient(#e8c089, #c0904f);
   -webkit-clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
   clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
-  pointer-events: none;
   transform-origin: top;
-  animation: ribbon-in 0.5s 0.15s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3));
+  transition: height 0.2s ease, transform 0.2s ease;
+}
+.pos-ribbon.arrive i {
+  animation: ribbon-in 0.5s 0.1s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+.pos-ribbon.stuck i {
+  height: 28px;
+}
+.pos-ribbon.pressed i {
+  height: 44px;
+  transition: height 0.45s ease;
 }
 .page.bookmarked::after {
   animation: ribbon-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
@@ -1923,6 +1948,12 @@ html.reading body {
   align-items: center;
   flex-wrap: nowrap;
   padding-right: 48px;
+}
+.marks .mk.stop {
+  padding-right: 88px;
+}
+.tp-del.mk-edit {
+  right: 42px;
 }
 .mk-ico {
   display: block;

@@ -30,6 +30,7 @@ export const READING_KEY = 'folio.reading.v1';
 const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
 const same = (p, q) => p.index === q.index && p.offset === q.offset;
 const LONG_PRESS_MS = 450; // press and hold a word: translate it
+const RETURN_SHOW_MS = 6000; // "Back to page N" stays this long after a jump / after Search closes
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
 const STRIP_GAP = 14;
@@ -115,6 +116,7 @@ class Reader {
     });
     this.thumbs.cache.setTone(this.settings.pageTone);
     this.#bindInput();
+    this.#bindRibbon();
     this.chaptersReady = this.#loadChapters();
     this.tools = new ReaderTools({
       el: this.el,
@@ -128,6 +130,15 @@ class Reader {
       stopMark: () => this.book.stopMark || null,
       placeStopMark: () => this.#startPlacing(),
       goToStop: () => this.#goToStop(),
+      clearStopMark: async () => {
+        this.book.stopMark = null;
+        await updateBook(this.book.id, { stopMark: null });
+        this.tools.decorateAll();
+      },
+      searchClosed: () => {
+        this.returnShowUntil = Date.now() + RETURN_SHOW_MS;
+        this.#syncReturn();
+      },
       dock: (px) => {
         this.keepZoom = true;
         this.dockPx = px || 0;
@@ -219,6 +230,7 @@ class Reader {
       </div>
       <div class="word-pop" hidden role="dialog" aria-label="Translation"></div>
       <div class="toast" hidden></div>
+      <button class="pos-ribbon" hidden aria-label="Reading position. Press and hold to mark where you stopped"><i></i></button>
       <div class="return-pill" hidden><button data-act="returnBack" class="rp-go">${icons.back}<span></span></button><button data-act="returnDismiss" class="rp-x" aria-label="Stay here">${icons.close}</button></div>
       <div class="place-hint" hidden><span>Tap the line where you stopped</span><button data-act="placeCancel">Cancel</button></div>
     `;
@@ -250,6 +262,7 @@ class Reader {
   #setReadingPos(n) {
     if (n === this.readingPos) return;
     this.readingPos = n;
+    this.#syncRibbon();
     this.book.readingPos = n;
     clearTimeout(this.posTimer);
     this.posTimer = setTimeout(() => updateBook(this.book.id, { readingPos: n }), 600);
@@ -258,6 +271,7 @@ class Reader {
 
   /** A jump elsewhere in the book (search, contents, bookmarks…): remember the way back. */
   async #jumpTo(n, opts) {
+    this.returnShowUntil = Date.now() + RETURN_SHOW_MS;
     // The zoom itself (not the on-screen page size): the way back is usually taken
     // after the Search panel has closed and the book has its full width again.
     if (!this.returnTo) this.returnTo = { page: this.readingPos, view: { ...this.#viewAnchor(), w: 0 }, moves: 0 };
@@ -267,7 +281,10 @@ class Reader {
     } finally {
       this.jumpPending = false;
     }
+    // Landed back where you were reading: nothing to return to.
+    if (this.returnTo && visiblePages(spreadPages(this.mode, this.spread, this.total)).includes(this.returnTo.page)) this.returnTo = null;
     this.#syncReturn();
+    this.#syncRibbon();
   }
 
   async #goBack() {
@@ -286,12 +303,102 @@ class Reader {
     this.#setReadingPos(r.page);
   }
 
+  /**
+   * "Back to page N": shown while Search is open, and for a few seconds after
+   * a jump or after Search closes. (The way back itself stays until you read
+   * on: the gold ribbon in Bookmarks still leads there.)
+   */
   #syncReturn() {
     const pill = this.el.querySelector('.return-pill');
     const r = this.returnTo;
     const away = r && !visiblePages(spreadPages(this.mode, this.spread, this.total)).includes(r.page);
-    pill.hidden = !away;
-    if (away) pill.querySelector('.rp-go span').textContent = `Back to page ${r.page}`;
+    const searching = this.tools && this.tools.searchActive;
+    const left = (this.returnShowUntil || 0) - Date.now();
+    const show = away && (searching || left > 0);
+    pill.hidden = !show;
+    if (show) pill.querySelector('.rp-go span').textContent = `Back to page ${r.page}`;
+    clearTimeout(this.returnTimer);
+    if (show && !searching) this.returnTimer = setTimeout(() => this.#syncReturn(), left + 30);
+  }
+
+  // ---- the gold ribbon (reading position), over the page you're reading
+
+  /** The page being read: in a zoomed spread, the one filling most of the screen. */
+  #primaryPage() {
+    if (this.mode === 'single') return this.#stripCurrent();
+    const shown = visiblePages(spreadPages('double', this.spread, this.total));
+    if (!this.camera.zoomed) return shown.includes(this.readingPos) ? this.readingPos : shown[0];
+    const box = this.el.getBoundingClientRect();
+    let best = shown[0];
+    let most = -1;
+    for (const n of shown) {
+      const p = this.bookEl.querySelector(`.slot .page[data-page="${n}"]`);
+      if (!p) continue;
+      const r = p.getBoundingClientRect();
+      const area = Math.max(0, Math.min(r.right, box.right) - Math.max(r.left, box.left)) * Math.max(0, Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top));
+      if (area > most) (most = area), (best = n);
+    }
+    return best;
+  }
+
+  /** Put the ribbon at the top of its page, or at the top of the screen when zoomed past it. */
+  #syncRibbon() {
+    const rib = this.ribbon || (this.ribbon = this.el.querySelector('.pos-ribbon'));
+    const root = this.mode === 'single' ? this.stripEl : this.bookEl;
+    const p = !this.busy && root && root.querySelector(`.slot .page[data-page="${this.readingPos}"]`);
+    const box = this.el.getBoundingClientRect();
+    const r = p && p.getBoundingClientRect();
+    // Near the page's top right corner; zoomed past that corner, kept just inside the screen.
+    let x = r && Math.max(8, Math.min(box.width - 48, r.right - r.width * 0.08 - 34 - box.left));
+    const visible = r && r.bottom > box.top + 60 && r.top < box.bottom - 60 && r.right > box.left + 60 && r.left < box.right - 60;
+    if (!visible) {
+      rib.hidden = true;
+      this.ribbonPage = null;
+      return;
+    }
+    const y = Math.max(0, r.top - box.top);
+    // At the top of the screen, stay clear of the zoom chip there.
+    const chip = this.el.querySelector('.zoom-chip');
+    const cr = chip && !chip.hidden && chip.getBoundingClientRect();
+    if (cr && cr.width && y < cr.bottom - box.top && x + 34 > cr.left - box.left) x = cr.left - box.left - 44;
+    rib.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    rib.classList.toggle('stuck', y === 0 && r.top < box.top);
+    if (rib.hidden || this.ribbonPage !== this.readingPos) {
+      // Arriving on a new page: slide in.
+      rib.classList.remove('arrive');
+      void rib.offsetWidth;
+      rib.classList.add('arrive');
+    }
+    rib.hidden = false;
+    this.ribbonPage = this.readingPos;
+  }
+
+  #bindRibbon() {
+    const rib = this.el.querySelector('.pos-ribbon');
+    let timer = null;
+    rib.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      rib.classList.add('pressed');
+      timer = setTimeout(() => {
+        timer = null;
+        rib.classList.remove('pressed');
+        if (navigator.vibrate) navigator.vibrate(12);
+        this.#startPlacing();
+      }, LONG_PRESS_MS);
+    });
+    const end = (e) => {
+      rib.classList.remove('pressed');
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+        if (e.type === 'pointerup') this.#toast(`Reading position · page ${this.readingPos} — hold to mark the line where you stopped`);
+      }
+    };
+    rib.addEventListener('pointerup', end);
+    rib.addEventListener('pointercancel', end);
+    rib.addEventListener('pointerleave', end);
+    rib.addEventListener('click', (e) => e.stopPropagation());
   }
 
   #startPlacing() {
@@ -579,6 +686,7 @@ class Reader {
     if (keep && keep.mode === mode) this.#restoreView(keep);
     this.pendingView = null;
     if (this.tools) this.tools.layout();
+    requestAnimationFrame(() => this.#syncRibbon());
   }
 
   /**
@@ -876,6 +984,10 @@ class Reader {
   // ---- zoom quality
 
   #onCamera() {
+    // Zoomed into a spread: the page filling the screen is the one being read.
+    // (The one-page view: the page at the reading line.)
+    if ((this.mode === 'single' || this.camera.zoomed) && !this.returnTo && !this.jumpPending && !this.busy) this.#setReadingPos(this.#primaryPage());
+    this.#syncRibbon();
     if (this.mode === 'single') {
       this.#syncStrip();
       const p = this.#stripCurrent();
@@ -1014,9 +1126,10 @@ class Reader {
         // Back where you were, or you've read on from here: the way back is no longer needed.
         if (shown.includes(r.page) || ++r.moves >= 3) this.returnTo = null;
       }
-      if (!this.returnTo) this.#setReadingPos(this.#currentPage());
+      if (!this.returnTo) this.#setReadingPos(this.#primaryPage());
       this.#syncReturn();
     }
+    this.#syncRibbon();
     if (this.camera.zoomed) {
       clearTimeout(this.hiResTimer);
       this.hiResTimer = setTimeout(() => this.#hiRes(), 120);
