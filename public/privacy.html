@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Folio · Privacy</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f1e8; --ink: #1f1b16; --muted: #6b6257; --line: #e2d9cb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14120f; --ink: #efe8dc; --muted: #a39887; --line: #2c2823; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 48px 20px 80px; }
+  h1 { font-family: Georgia, serif; font-weight: 600; font-size: 2.2rem; margin: 0 0 4px; }
+  h2 { font-family: Georgia, serif; font-weight: 600; font-size: 1.25rem; margin: 32px 0 6px; }
+  p, li { color: var(--ink); }
+  .muted { color: var(--muted); }
+  ul { padding-left: 1.2em; }
+  a { color: inherit; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Folio — Privacy</h1>
+  <p class="muted">Folio is a personal book reader, used by its owner and the people they invite. Last updated 11 October 2026.</p>
+
+  <h2>Without an account</h2>
+  <p>Your books, reading progress, bookmarks and settings are stored only on your device, in the browser's storage. Nothing is sent anywhere.</p>
+
+  <h2>With sync (Sign in with Google)</h2>
+  <ul>
+    <li><b>What we receive from Google:</b> your email address and a Google account identifier, to know which library is yours.</li>
+    <li><b>What is stored on Folio's server</b> (Cloudflare): your email address; your reading data (place in each book, bookmarks and notes, series, "where I stopped", settings, reading time); book titles, sizes and small cover pictures; and, for each device, a random sign-in token (only its fingerprint is kept).</li>
+    <li><b>Your book files are not stored on Folio's server.</b> They stay on your devices and, if you turn it on, in your own Google Drive.</li>
+  </ul>
+
+  <h2>Google Drive</h2>
+  <ul>
+    <li>When you turn on <b>Library in Google Drive</b>, Folio asks Google for access to your Drive, so it can see the books you put in its <b>Folio</b> folder yourself (from a computer, a phone or the Drive app).</li>
+    <li>Folio only reads, adds and removes book files inside that Folio folder and the folders in it. It does not open, read, change or delete anything else in your Drive.</li>
+    <li>Files travel directly between your device and Google. Folio's server keeps the Drive permission encrypted, and uses it only to give your own devices short-lived access, and to stream a book to family members you chose to share your library with.</li>
+    <li>You can disconnect Drive in Folio's Settings at any time, or remove Folio's access at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
+  </ul>
+  <p>Folio's use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+
+  <h2>Translation and read-aloud</h2>
+  <p>When you translate a word or have text read aloud, that text is sent to Google Translate or Microsoft's speech service to get the result. Nothing else about you is sent with it.</p>
+
+  <h2>What Folio never does</h2>
+  <p>No advertising, no tracking, no analytics, and your data is never sold or shared with anyone, except the book files you yourself share with family through the family library.</p>
+
+  <h2>Removing your data</h2>
+  <p>Signing out in Settings removes that device's access. To have your account and all its reading data deleted from Folio's server, ask the person who gave you Folio; it is done in full.</p>
+
+  <hr>
+  <p class="muted"><a href="./">Back to Folio</a></p>
+</main>
+</body>
+</html>
