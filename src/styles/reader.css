@@ -2231,3 +2231,40 @@ html.reading body {
   color: #f2ddb8;
   box-shadow: inset 0 0 0 1px rgba(214, 170, 112, 0.55);
 }
+
+/* ---------- comics and manga ---------- */
+/* Right to left: the page area is mirrored (its pictures are drawn mirrored, so they read right). */
+.reader.rtl .stage {
+  transform: scaleX(-1);
+}
+.reader.rtl .edge-arrow.prev {
+  left: auto;
+  right: max(10px, env(safe-area-inset-right));
+}
+.reader.rtl .edge-arrow.next {
+  right: auto;
+  left: max(10px, env(safe-area-inset-left));
+}
+.reader.rtl .edge-arrow svg,
+.reader.rtl .ts-item {
+  transform: scaleX(-1);
+}
+/* Webtoons: one seamless column */
+.reader.webtoon .slot.strip-page {
+  border-radius: 0;
+  box-shadow: none;
+}
+/* Artwork runs across the spine: only a hint of the fold */
+.reader.comic .spine {
+  opacity: 0.4;
+}
+.tx-chip small {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.72rem;
+  opacity: 0.65;
+}
+.tx-chip {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}

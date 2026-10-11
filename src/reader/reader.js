@@ -76,6 +76,7 @@ export async function mountReader(root, { id }, nav) {
   if (!book) return nav('#/library');
   const blob = await getBookFile(id);
   if (book.format === 'epub') return mountEpub(root, book, blob, nav);
+  if (book.format === 'comic') return mountComic(root, book, blob, nav);
   const doc = await openPdf(new Uint8Array(await blob.arrayBuffer()));
   // Size the pages from an inside page: the cover is often a slightly
   // different shape, and every page is drawn into the same box.
@@ -85,6 +86,54 @@ export async function mountReader(root, { id }, nav) {
   } catch {}
   const reader = new Reader(root, book, doc, nav);
   return () => reader.destroy();
+}
+
+/**
+ * Comics and manga. Changing the reading direction or view rebuilds the
+ * pages (two-page artwork is split differently), keeping the place.
+ */
+async function mountComic(root, book, blob, nav) {
+  const { openComicBook, comicPages } = await import('../comic/comic.js');
+  let reader = null;
+  let gone = false;
+  const open = async (reopen) => {
+    const doc = await openComicBook(book, blob);
+    if (gone) return doc.destroy();
+    book.pageAspect = doc.W / doc.H;
+    if (book.pageCount !== doc.numPages) {
+      book.pageCount = doc.numPages;
+      updateBook(book.id, { pageCount: doc.numPages });
+    }
+    reader = new Reader(root, book, doc, nav, { reopen, onComic: change });
+  };
+  const change = async (patch) => {
+    if (gone || !reader) return;
+    const old = reader.doc;
+    const keep = reader.handOver();
+    reader.destroy({ staying: true });
+    reader = null;
+    book = Object.assign((await getBook(book.id)) || book, keep.saved);
+    const comic = Object.assign({}, book.comic, patch);
+    // Same pictures, maybe cut differently: move every saved page to the page now showing the same picture.
+    const pages = comicPages(old.comic, { rtl: comic.rtl, view: comic.view });
+    const map = (n) => {
+      if (!n) return n;
+      const was = old.pages[Math.min(Math.max(1, n), old.pages.length) - 1];
+      const i = pages.findIndex((p) => p.img === was.img && (was.half < 0 || p.half < 0 || p.half === was.half));
+      return i >= 0 ? i + 1 : Math.min(n, pages.length);
+    };
+    const saved = { comic, pageCount: pages.length, lastPage: map(book.lastPage), readingPos: map(book.readingPos) };
+    if (Array.isArray(book.bookmarks)) saved.bookmarks = book.bookmarks.map((b) => Object.assign({}, b, { page: map(b.page) }));
+    if (book.stopMark) saved.stopMark = Object.assign({}, book.stopMark, { page: map(book.stopMark.page) });
+    Object.assign(book, saved);
+    await updateBook(book.id, saved);
+    await open(keep.panel);
+  };
+  await open();
+  return () => {
+    gone = true;
+    if (reader) reader.destroy();
+  };
 }
 
 const EPUB_KEYS = ['epubFont', 'epubSize', 'epubSpacing'];
@@ -140,9 +189,15 @@ async function mountEpub(root, book, blob, nav) {
 }
 
 class Reader {
-  constructor(root, book, doc, nav, { reopen } = {}) {
+  constructor(root, book, doc, nav, { reopen, onComic } = {}) {
     this.root = root;
     this.reflowable = !!doc.reflowable;
+    this.kind = doc.reflowable ? 'epub' : doc.fixedImages ? 'comic' : 'pdf';
+    this.onComic = onComic;
+    // Manga: the page area is mirrored on screen (its pages are drawn mirrored, so they read right).
+    this.rtl = !!doc.rtl;
+    // Webtoons: one long vertical scroll, pictures at their own heights, no gaps.
+    this.webtoon = doc.view === 'scroll';
     this.book = book;
     this.doc = doc;
     this.nav = nav;
@@ -204,13 +259,16 @@ class Reader {
       toast: (m) => this.#toast(m),
       isReading: () => !!this.readMode,
       reflowable: this.reflowable,
+      kind: this.kind,
+      comicMode: () => ({ rtl: this.rtl, view: this.webtoon ? 'scroll' : 'pages' }),
+      setComicMode: (patch) => this.onComic && this.onComic(patch),
       toolbar: (act) => {
         const btn = this.el.querySelector(`[data-act="${act}"]`);
         if (act === 'goto' || act === 'thumbs') this.#showChrome();
         this.#action(act, btn);
       },
     });
-    if (reopen === 'text') this.tools.openText();
+    if (reopen === 'text') this.tools.run('text');
     // Keep the page itself still while reading (iOS likes to scroll/zoom it).
     document.documentElement.classList.add('reading');
     window.scrollTo(0, 0);
@@ -244,7 +302,7 @@ class Reader {
 
   #build() {
     const el = (this.el = document.createElement('div'));
-    el.className = 'reader';
+    el.className = `reader${this.kind === 'comic' ? ' comic' : ''}${this.rtl ? ' rtl' : ''}${this.webtoon ? ' webtoon' : ''}`;
     el.innerHTML = `
       <div class="stage">
         <div class="camera">
@@ -793,7 +851,7 @@ class Reader {
     // The layout the screen calls for; zoomed into one page in landscape
     // ("focus"), the one-page scroll is used instead of the spread.
     // (Search docked beside the book narrows it: the layout still follows the whole screen.)
-    const natural = this.lock.locked ? this.lock.lockedMode : W + (this.dockPx || 0) > H ? 'double' : 'single';
+    const natural = this.webtoon ? 'single' : this.lock.locked ? this.lock.lockedMode : W + (this.dockPx || 0) > H ? 'double' : 'single';
     if (natural !== 'double' || this.settings.focusZoom === false) this.focus = false;
     this.natural = natural;
     const mode = natural === 'double' && this.focus ? 'single' : natural;
@@ -834,7 +892,8 @@ class Reader {
     } else {
       this.#drop([...this.bookEl.children, ...this.stripEl.children]);
       this.stripPages.clear();
-      const stripH = STRIP_PAD * 2 + this.total * (ph + STRIP_GAP) - STRIP_GAP;
+      this.#measureStrip();
+      const stripH = this.tops[this.total] + this.stripPad;
       Object.assign(this.stripEl.style, { width: `${pw}px`, height: `${stripH}px`, left: `${(W - pw) / 2}px` });
       const m = Math.max(0, Math.min(16, (W - pw) / 2));
       this.camera.setBox({ x: (W - pw) / 2 - m, y: 0, w: pw + 2 * m, h: stripH });
@@ -875,7 +934,7 @@ class Reader {
       top = r.top;
     }
     // w: the page's width on screen, so it keeps its size even if the layout's page size changes.
-    return { mode: this.mode, focus: this.focus, n, fx: (cx - left) / this.pw, fy: (cy - top) / this.ph, s: cam.s, w: cam.s * this.pw };
+    return { mode: this.mode, focus: this.focus, n, fx: (cx - left) / this.pw, fy: (cy - top) / (this.mode === 'single' ? this.#pageH(n) : this.ph), s: cam.s, w: cam.s * this.pw };
   }
 
   /** Put the view back on a spot saved by #viewAnchor (in the current layout). */
@@ -895,7 +954,7 @@ class Reader {
     }
     const cam = this.camera;
     const x = left + v.fx * this.pw;
-    const y = top + v.fy * this.ph;
+    const y = top + v.fy * (this.mode === 'single' ? this.#pageH(v.n) : this.ph);
     const s = Math.max(1, Math.min(MAX_ZOOM, v.w ? v.w / this.pw : v.s));
     cam.stop();
     cam.set(s, this.W / 2 - x * s, this.H / 2 - y * s);
@@ -914,6 +973,8 @@ class Reader {
       const hpad = Math.max(56, W * 0.05);
       return Math.floor(Math.min((W - 2 * hpad) / 2, (H - 2 * vpad) * this.#aspect()));
     }
+    // Webtoons: a column about as wide as a tall screen's width; on phones, the whole width.
+    if (this.webtoon) return Math.floor(Math.min(W, Math.max(Math.min(W, 720), H * 0.75)));
     // Portrait (and focus) reads as a scroll of full-width pages.
     return Math.floor(Math.min(W - 2 * Math.max(10, W * 0.025), 1200));
   }
@@ -1093,12 +1154,41 @@ class Reader {
 
   // ---- portrait strip
 
+  /** Where each page starts in the strip (webtoon pictures each have their own height). */
+  #measureStrip() {
+    const gap = this.webtoon ? 0 : STRIP_GAP;
+    this.stripPad = this.webtoon ? 0 : STRIP_PAD;
+    const tops = (this.tops = new Array(this.total + 1));
+    let y = this.stripPad;
+    for (let n = 1; n <= this.total; n++) {
+      tops[n - 1] = y;
+      y += this.#pageH(n) + (n < this.total ? gap : 0);
+    }
+    tops[this.total] = y;
+  }
+
+  /** Height of page n in the current layout. */
+  #pageH(n) {
+    return this.webtoon ? Math.round(this.doc.heightOf(n, this.pw)) : this.ph;
+  }
+
   #pageTop(n) {
-    return STRIP_PAD + (n - 1) * (this.ph + STRIP_GAP);
+    return this.tops ? this.tops[Math.max(1, Math.min(this.total, n)) - 1] : STRIP_PAD;
   }
 
   #pageAtY(y) {
-    return Math.max(1, Math.min(this.total, Math.floor((y - STRIP_PAD + STRIP_GAP / 2) / (this.ph + STRIP_GAP)) + 1));
+    const t = this.tops;
+    if (!t) return 1;
+    // The last page starting above y (halfway into a gap counts as the next page).
+    const half = this.webtoon ? 0 : STRIP_GAP / 2;
+    let lo = 1;
+    let hi = this.total;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (t[mid - 1] - half <= y) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
   }
 
   /** Page considered "current" in the strip: the one under the upper third of the screen. */
@@ -1138,6 +1228,7 @@ class Reader {
       if (this.stripPages.has(n)) continue;
       const slot = this.#slot('strip-page', n, { prio: n >= visFirst && n <= visLast ? 0 : 1 });
       slot.style.top = `${this.#pageTop(n)}px`;
+      if (this.webtoon) slot.style.height = `${this.#pageH(n)}px`;
       this.stripEl.append(slot);
       this.stripPages.set(n, slot);
     }
@@ -1684,8 +1775,9 @@ class Reader {
       const portrait = this.mode === 'single';
       if (portrait && (k === 'ArrowDown' || k === ' ')) this.camera.animateTo(this.camera.s, this.camera.tx, this.camera.ty - this.H * 0.85, 300), e.preventDefault();
       else if (portrait && k === 'ArrowUp') this.camera.animateTo(this.camera.s, this.camera.tx, this.camera.ty + this.H * 0.85, 300), e.preventDefault();
-      else if (k === 'ArrowRight' || k === 'PageDown' || k === ' ') this.step(1), e.preventDefault();
-      else if (k === 'ArrowLeft' || k === 'PageUp') this.step(-1), e.preventDefault();
+      else if (k === 'PageDown' || k === ' ') this.step(1), e.preventDefault();
+      else if (k === 'PageUp') this.step(-1), e.preventDefault();
+      else if (k === 'ArrowRight' || k === 'ArrowLeft') this.step((k === 'ArrowRight') !== this.rtl ? 1 : -1), e.preventDefault(); // manga: the next page is to the left
       else if (k === 'Home') this.go(0);
       else if (k === 'End') this.go(this.spreadTotal - 1);
       else if (k === 'Escape') this.#closePopup();
@@ -1835,7 +1927,16 @@ class Reader {
   // Two fingers: pinch-zoom.
 
   #local(e) {
-    return this.lock.toLocal(e.clientX, e.clientY);
+    const p = this.lock.toLocal(e.clientX, e.clientY);
+    if (this.rtl) p.x = this.el.offsetWidth - p.x; // the page area is mirrored
+    return p;
+  }
+
+  /** A screen rectangle in the page area's own coordinates. */
+  #rectLocal(r) {
+    const l = this.lock.rectToLocal(r);
+    if (this.rtl) l.left = this.el.offsetWidth - l.left - l.width;
+    return l;
   }
 
   #zone(p) {
@@ -2217,7 +2318,7 @@ class Reader {
   async #enterFocus(mid) {
     const pages = [...this.bookEl.querySelectorAll(':scope > .slot > .page')];
     if (!pages.length) return;
-    const rects = pages.map((p) => this.lock.rectToLocal(p.getBoundingClientRect()));
+    const rects = pages.map((p) => this.#rectLocal(p.getBoundingClientRect()));
     let k = rects.findIndex((r) => mid.x >= r.left && mid.x <= r.left + r.width);
     if (k < 0) {
       const shown = (r) => Math.max(0, Math.min(this.W, r.left + r.width) - Math.max(0, r.left));
@@ -2270,7 +2371,7 @@ class Reader {
     const keepSlot = this.stripPages.get(n);
     const keepPage = keepSlot && keepSlot.querySelector('.page');
     if (!keepPage) return;
-    const R = this.lock.rectToLocal(keepPage.getBoundingClientRect());
+    const R = this.#rectLocal(keepPage.getBoundingClientRect());
     const old = keepPage.querySelector('canvas');
     this.busy = true;
     this.#closePopup();
@@ -2384,7 +2485,7 @@ class Reader {
     clearTimeout(this.findFade);
     this.hlLayer.replaceChildren(
       ...rects.map((r) => {
-        const l = this.lock.rectToLocal(r);
+        const l = this.#rectLocal(r);
         const d = document.createElement('div');
         d.className = `hl ${cls}`;
         Object.assign(d.style, {

@@ -12,7 +12,7 @@ import { FONTS } from '../epub/fonts.js';
 
 export const TOOLS = {
   search: { label: 'Search', icon: 'search' },
-  text: { label: 'Text size', icon: 'type', reflow: true },
+  text: { label: 'Text size', icon: 'type', kinds: ['epub', 'comic'] }, // comics: "Reading mode"
   bookmark: { label: 'Bookmark page', icon: 'bookmark' },
   bookmarks: { label: 'Bookmarks', icon: 'bookmarks' },
   stopmark: { label: 'Mark where I stopped', icon: 'flag' },
@@ -464,14 +464,44 @@ export class ReaderTools {
     };
   }
 
+  // ---- reading mode (comics and manga)
+
+  /** Which way the pages go, and pages or one long scroll (webtoons). */
+  openComicMode() {
+    const body = this.#openPanel('text', 'Reading mode');
+    const m = this.api.comicMode();
+    const chip = (key, val, label, on) => `<button class="tx-chip" role="radio" data-key="${key}" data-val="${val}" aria-checked="${on}">${label}</button>`;
+    body.innerHTML = `
+      <div class="tx-row">
+        <span class="tx-label">Pages turn</span>
+        <div class="tx-chips" role="radiogroup">${chip('rtl', '0', 'Left to right<small>comics</small>', !m.rtl)}${chip('rtl', '1', 'Right to left<small>manga</small>', m.rtl)}</div>
+      </div>
+      <div class="tx-row">
+        <span class="tx-label">Show as</span>
+        <div class="tx-chips" role="radiogroup">${chip('view', 'pages', 'Pages<small>turn like a book</small>', m.view !== 'scroll')}${chip('view', 'scroll', 'Scroll<small>webtoons</small>', m.view === 'scroll')}</div>
+      </div>
+      <p class="tp-hint">Pictures that span two pages are shown across both pages of the spread. Each book keeps its own choice.</p>`;
+    body.onclick = (e) => {
+      const c = e.target.closest('[data-key]');
+      if (!c || c.getAttribute('aria-checked') === 'true') return;
+      for (const b of body.querySelectorAll(`[data-key="${c.dataset.key}"]`)) b.setAttribute('aria-checked', b === c);
+      this.api.setComicMode(c.dataset.key === 'rtl' ? { rtl: c.dataset.val === '1' } : { view: c.dataset.val });
+    };
+  }
+
   // ------------------------------------------------------------------ tools
 
-  /** Tools that make sense for this book (text settings only for EPUB books). */
+  /** Tools that make sense for this kind of book (text settings only for EPUB books, reading mode for comics). */
   #usable(id) {
-    return !TOOLS[id].reflow || !!this.api.reflowable;
+    return !TOOLS[id].kinds || TOOLS[id].kinds.includes(this.api.kind);
+  }
+
+  #icon(id) {
+    return icons[id === 'text' && this.api.kind === 'comic' ? 'manga' : TOOLS[id].icon];
   }
 
   #label(id) {
+    if (id === 'text' && this.api.kind === 'comic') return 'Reading mode';
     if (id === 'bookmark') return this.isBookmarked(this.api.currentPage()) ? 'Remove bookmark' : 'Bookmark page';
     if (id === 'readAloud') return this.api.isReading() ? 'Stop read aloud' : 'Read aloud';
     if (id === 'tone') return `Page tone: ${getSettings().pageTone}`;
@@ -496,7 +526,7 @@ export class ReaderTools {
       case 'contents':
         return this.openContents();
       case 'text':
-        return this.openText();
+        return this.api.kind === 'comic' ? this.openComicMode() : this.openText();
       case 'tone': {
         const t = getSettings().pageTone;
         const next = TONES[(TONES.indexOf(t) + 1) % TONES.length];
@@ -686,7 +716,7 @@ export class ReaderTools {
     const fav = this.favorites;
     const ids = (all ? Object.keys(TOOLS).filter((id) => !fav.includes(id)) : fav).filter((id) => this.#usable(id));
     this.fabMenu.dataset.all = all ? '1' : '';
-    const item = (id) => `<button role="menuitem" data-tool="${id}"><span class="fm-ico">${icons[TOOLS[id].icon]}</span><span class="fm-label">${esc(this.#label(id))}</span></button>`;
+    const item = (id) => `<button role="menuitem" data-tool="${id}"><span class="fm-ico">${this.#icon(id)}</span><span class="fm-label">${esc(this.#label(id))}</span></button>`;
     this.fabMenu.innerHTML =
       ids.map(item).join('') +
       (all
@@ -725,7 +755,7 @@ export class ReaderTools {
       const fav = this.favorites;
       const rest = Object.keys(TOOLS).filter((id) => !fav.includes(id));
       const row = (id, inFav) =>
-        `<li data-id="${id}">${inFav ? `<span class="ed-grip" aria-hidden="true">${icons.grip}</span>` : ''}<span class="fm-ico">${icons[TOOLS[id].icon]}</span><span class="ed-label">${esc(TOOLS[id].label)}</span><button class="ed-btn ${inFav ? 'rm' : 'add'}" data-${inFav ? 'rm' : 'add'}="${id}" aria-label="${inFav ? 'Remove' : 'Add'} ${esc(TOOLS[id].label)}">${inFav ? icons.minus : icons.plus}</button></li>`;
+        `<li data-id="${id}">${inFav ? `<span class="ed-grip" aria-hidden="true">${icons.grip}</span>` : ''}<span class="fm-ico">${icons[TOOLS[id].icon]}</span><span class="ed-label">${esc(id === 'text' && this.api.kind === 'comic' ? 'Reading mode' : TOOLS[id].label)}</span><button class="ed-btn ${inFav ? 'rm' : 'add'}" data-${inFav ? 'rm' : 'add'}="${id}" aria-label="${inFav ? 'Remove' : 'Add'} ${esc(TOOLS[id].label)}">${inFav ? icons.minus : icons.plus}</button></li>`;
       body.innerHTML = `
         <p class="tp-hint">Tap the bubble to open these. Drag <span class="ed-grip-inline">${icons.grip}</span> to change the order. Drag the bubble itself anywhere on the screen.</p>
         <h3 class="ed-h">Favorites</h3>

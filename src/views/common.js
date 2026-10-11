@@ -82,7 +82,7 @@ export function pickFiles() {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.pdf,application/pdf,.epub,application/epub+zip';
+    input.accept = '.pdf,application/pdf,.epub,application/epub+zip,.cbz,.cbr';
     input.multiple = true;
     input.style.display = 'none';
     input.addEventListener('change', () => {
@@ -99,7 +99,7 @@ export async function importFiles(files, view, onProgress) {
   const pdfs = files.filter(isSupportedFile);
   const skipped = files.length - pdfs.length;
   if (!pdfs.length) {
-    if (skipped) toast(view, 'Only PDF and EPUB books can be added');
+    if (skipped) toast(view, 'Only PDF, EPUB and comic (CBZ, CBR) files can be added');
     return 0;
   }
   const ids = new Set((await listBooks()).map((b) => b.id));
