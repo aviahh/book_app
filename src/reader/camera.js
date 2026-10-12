@@ -109,11 +109,12 @@ export class Camera {
     this.raf = null;
   }
 
-  animateTo(s, tx, ty, duration = 320) {
+  /** Move to (s, tx, ty) over `duration` ms. gentle: a soft start and end (sine), for slow glides that are watched. */
+  animateTo(s, tx, ty, duration = 320, { gentle = false } = {}) {
     this.stop();
     const to = this.clamp(s, tx, ty);
     const from = { s: this.s, tx: this.tx, ty: this.ty };
-    const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+    const ease = gentle ? (t) => 0.5 - 0.5 * Math.cos(Math.PI * t) : (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
     return new Promise((resolve) => {
       const start = performance.now();
       const step = (now) => {

@@ -3196,9 +3196,10 @@ class Reader {
    * is estimated from how far into the sentence's audio it has got):
    *  - when it reaches the next page mid-sentence, that page is turned to (or
    *    scrolled to) right away, and the rest of the sentence marked there;
-   *  - zoomed in, the view glides along the line with the voice, keeping its
-   *    place a little left of the middle so the words that come next are in
-   *    view; a new line is moved to quickly;
+   *  - zoomed in, the view stays still while the voice reads across it; when
+   *    the voice is about two thirds of the way over, one slow, smooth glide
+   *    (about a second, soft at both ends) brings the next stretch of the line
+   *    into view; a new line is moved to quickly;
    *  - the line being read is kept away from the top and bottom edges.
    * After you move the view yourself it waits a moment before moving it again.
    */
@@ -3255,27 +3256,27 @@ class Reader {
     c.lineTop = r.top;
     let dx = 0;
     let dy = 0;
-    let quick = false;
+    let ms = 0;
     if (zoomed) {
-      const place = box.left + this.W * 0.38;
       if (newLine) {
-        // A new line (or sentence): if its start is out of sight, there at once.
-        if (r.left < box.left + this.W * 0.05 || r.right > box.right - this.W * 0.05) (dx = box.left + this.W * 0.1 - r.left), (quick = true);
-      } else if (r.right > box.right - this.W * 0.1 || r.left < box.left) {
-        // The voice got ahead of the view (a fast voice): catch up now.
-        dx = place - r.left;
-        quick = true;
-      } else if (r.left > place) {
-        // Along the line: small steps, as fast as the voice goes, its place staying a little left of the middle.
-        dx = (place - r.left) * 0.6;
+        // A new line (or sentence): if its start is out of sight, there quickly.
+        if (r.left < box.left + this.W * 0.05 || r.right > box.right - this.W * 0.05) (dx = box.left + this.W * 0.1 - r.left), (ms = 320);
+      } else if (r.right > box.right - this.W * 0.06 || r.left < box.left) {
+        // The voice got ahead of the view (a fast voice): catch up, still smoothly.
+        dx = box.left + this.W * 0.18 - r.left;
+        ms = 650;
+      } else if (r.left > box.left + this.W * 0.58) {
+        // Along the line: the view stays still while the voice reads across it, then, when the voice is about
+        // two thirds of the way over, one slow, smooth glide brings the next stretch of the line into view.
+        dx = box.left + this.W * 0.15 - r.left;
+        ms = Math.max(850, Math.min(1500, (Math.abs(dx) / this.W) * 2200));
       }
     }
-    if (r.top < box.top + this.H * 0.1 || r.bottom > box.bottom - this.H * 0.15) (dy = box.top + this.H * 0.35 - r.top), (quick = true);
+    if (r.top < box.top + this.H * 0.1 || r.bottom > box.bottom - this.H * 0.15) (dy = box.top + this.H * 0.35 - r.top), (ms = Math.max(ms, 320));
     if (this.rtl) dx = -dx;
     if (Math.abs(dx) < 1 && Math.abs(dy) < 2) return;
-    const ms = quick ? 260 : 150;
-    if (quick) c.holdUntil = performance.now() + ms;
-    cam.animateTo(cam.s, cam.tx + dx, cam.ty + dy, ms);
+    c.holdUntil = performance.now() + ms; // a move is never cut short by the next look
+    cam.animateTo(cam.s, cam.tx + dx, cam.ty + dy, ms, { gentle: true });
   }
 
   /** Is any of page n on screen now (one-page scroll)? */
