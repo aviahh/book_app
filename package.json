@@ -14,11 +14,15 @@
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/literata": "^5.3.0",
     "@fontsource/cormorant-garamond": "^5.2.8",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/jpn": "^1.0.0",
+    "@tesseract.js-data/jpn_vert": "^1.0.0",
     "fflate": "^0.8.3",
     "hyphen": "^1.14.1",
     "node-unrar-js": "^2.0.2",
     "pdfjs-dist": "^6.4.299",
-    "pdfjs-legacy": "npm:pdfjs-dist@2.16.105"
+    "pdfjs-legacy": "npm:pdfjs-dist@2.16.105",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "vite": "^8.3.3",

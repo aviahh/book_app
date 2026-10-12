@@ -2268,3 +2268,33 @@ html.reading body {
   padding-top: 6px;
   padding-bottom: 6px;
 }
+
+/* Comics: the bubble being read, and the words read from it */
+.hl.bubble {
+  border-radius: 14px;
+  background: rgba(64, 150, 255, 0.1);
+  box-shadow: 0 0 0 2px rgba(64, 150, 255, 0.55);
+}
+.word-pop.ocr {
+  min-width: 260px;
+}
+.word-pop.ocr .pop-tr .muted {
+  font-size: 0.95rem;
+}
+.pop-ocr {
+  display: flex;
+  margin: 10px -2px 2px;
+}
+.pop-ocr button {
+  margin: 0 2px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(242, 242, 242, 0.72);
+  font-size: 0.8rem;
+}
+.pop-ocr button[aria-checked='true'] {
+  background: rgba(58, 160, 255, 0.2);
+  border-color: rgba(58, 160, 255, 0.6);
+  color: #fff;
+}

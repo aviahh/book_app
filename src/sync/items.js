@@ -96,7 +96,7 @@ export function bookItems(book) {
     seed: started ? book.lastOpenedAt || 1 : 0,
   });
   if (book.seriesName !== undefined) out.push({ k: `b:${sid}:series`, v: { name: book.seriesName, index: book.seriesIndex == null ? null : book.seriesIndex }, seed: book.addedAt || 0 });
-  if (book.comic) out.push({ k: `b:${sid}:comic`, v: { rtl: !!book.comic.rtl, view: book.comic.view === 'scroll' ? 'scroll' : 'pages' }, seed: book.addedAt || 0 });
+  if (book.comic) out.push({ k: `b:${sid}:comic`, v: comicValue(book.comic), seed: book.addedAt || 0 });
   if (book.stopMark) out.push({ k: `b:${sid}:stop`, v: Object.assign({}, book.stopMark, { page: posOf(book, book.stopMark.page) }), seed: book.stopMark.at || 0 });
   const seen = new Set();
   for (const b of book.bookmarks || []) {
@@ -166,6 +166,14 @@ function keep(patch, pairs) {
   return patch;
 }
 
+/** A comic's reading choices: direction, view, and the language of its bubbles (only known values pass). */
+const OCR_LANGS = ['en', 'ja', 'ja-v'];
+function comicValue(c) {
+  const v = { rtl: !!c.rtl, view: c.view === 'scroll' ? 'scroll' : 'pages' };
+  if (OCR_LANGS.indexOf(c.ocr) >= 0) v.ocr = c.ocr;
+  return v;
+}
+
 /** Split a key into its parts: { kind: 'book' | 'setting' | 'stats', sid, field, page, … }. */
 export function parseKey(k) {
   let m = /^b:([0-9a-f]+):(meta|prog|series|stop|cover|drive|comic)$/.exec(k);
@@ -200,7 +208,7 @@ export function patchFor(book, item, items) {
   }
   if (p.field === 'comic') {
     if (item.d || !item.v) return null;
-    return { comic: { rtl: !!item.v.rtl, view: item.v.view === 'scroll' ? 'scroll' : 'pages' } };
+    return { comic: comicValue(item.v) };
   }
   if (p.field === 'stop') {
     if (item.d || !item.v) return { stopMark: null };

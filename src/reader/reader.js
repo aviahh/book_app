@@ -1865,6 +1865,14 @@ class Reader {
         });
         return this.#paintSound();
       }
+      case 'popOcrLang': {
+        // The bubbles of this book are in another language: remember it, and read this one again.
+        const lang = btn.dataset.lang;
+        this.book.comic = Object.assign({}, this.book.comic, { ocr: lang });
+        updateBook(this.book.id, { comic: this.book.comic });
+        if (this.ocrAt) this.#readBubble(this.ocrAt.cx, this.ocrAt.cy);
+        return;
+      }
       case 'popCopy':
         navigator.clipboard?.writeText(this.popWord.text).then(() => this.#toast('Copied'));
         return;
@@ -2027,6 +2035,13 @@ class Reader {
     clearTimeout(this.tapTimer);
     this.lastTap = null;
     this.wordSel = null;
+    if (this.kind === 'comic') {
+      // Comics have no text to select: read the words from the picture.
+      ptr.pressed = true;
+      if (navigator.vibrate) navigator.vibrate(8);
+      this.#readBubble(ptr.cx0, ptr.cy0);
+      return;
+    }
     this.#lookupWord(ptr.cx0, ptr.cy0);
     if (this.wordSel) {
       ptr.pressed = true; // lifting the finger then does nothing more…
@@ -2526,6 +2541,73 @@ class Reader {
     return m ? m[0] : '';
   }
 
+  // ---- comics: the words in a speech bubble, read from the picture
+
+  /** Press and hold on a comic page: find the bubble there, read it, then translate it as a phrase. */
+  async #readBubble(cx, cy) {
+    const pageEl = (document.elementsFromPoint ? document.elementsFromPoint(cx, cy) : []).find((el) => el.matches && el.matches('.page[data-page]'));
+    if (!pageEl) return;
+    const page = await this.doc.getPage(+pageEl.dataset.page);
+    const src = page.source && (await page.source());
+    if (!src) return;
+    const r = pageEl.getBoundingClientRect();
+    const u = (cx - r.left) / r.width;
+    const v = (cy - r.top) / r.height;
+    const { box } = src;
+    if (u < box.x || u > box.x + box.w || v < box.y || v > box.y + box.h) return;
+    const ix = src.sx + ((u - box.x) / box.w) * src.sw;
+    const iy = ((v - box.y) / box.h) * src.ih;
+    const lang = (this.book.comic && this.book.comic.ocr) || 'en';
+    const req = (this.popReq = (this.popReq || 0) + 1);
+    const point = this.lock.rectToLocal({ left: cx - 1, top: cy - 1, width: 2, height: 2, right: cx + 1, bottom: cy + 1 });
+    this.ocrAt = { cx, cy };
+    this.popWord = null;
+    clearTimeout(this.popCloseTimer);
+    const { readAt } = await import('../comic/ocr.js');
+    this.#renderPopup(point, { word: '', loading: true, ocr: { lang, status: this.ocrReady ? 'Reading the bubble…' : 'Getting text recognition ready…' } });
+    let res;
+    try {
+      res = await readAt(src.img, { sx: src.sx, sw: src.sw, ix, iy, lang });
+      this.ocrReady = true;
+    } catch (e) {
+      console.warn('text recognition', e);
+      if (req === this.popReq && !this.pop.hidden) this.#renderPopup(point, { word: '', error: true, ocr: { lang, status: navigator.onLine === false && !this.ocrReady ? 'Text recognition needs the internet the first time.' : 'Couldn’t read this bubble.' } });
+      return;
+    }
+    if (req !== this.popReq || this.pop.hidden) return;
+    // The bubble, marked on the page.
+    const bx = r.left + (box.x + ((res.box.x - src.sx) / src.sw) * box.w) * r.width;
+    const by = r.top + (box.y + (res.box.y / src.ih) * box.h) * r.height;
+    const bw = (res.box.w / src.sw) * box.w * r.width;
+    const bh = (res.box.h / src.ih) * box.h * r.height;
+    const rect = { left: bx, top: by, width: bw, height: bh, right: bx + bw, bottom: by + bh };
+    if (res.bubble) this.#drawHighlights([rect], 'bubble');
+    const anchor = this.lock.rectToLocal(rect);
+    if (!res.text || res.text.replace(/[^\p{L}\p{N}]/gu, '').length < 2) {
+      this.#renderPopup(anchor, { word: '', error: true, ocr: { lang, status: 'No words found here. Press and hold inside a speech bubble.' } });
+      return this.#armPopupClose();
+    }
+    this.#translateText(res.text, anchor, { ocr: { lang } }, req);
+  }
+
+  /** The words of a bubble (or any text) in the translation bubble. */
+  async #translateText(text, anchor, extra = {}, req = (this.popReq = (this.popReq || 0) + 1)) {
+    const target = this.settings.translateTo;
+    this.popWord = { text, query: text, lang: guessLang(text) };
+    this.#renderPopup(anchor, Object.assign({ word: text, loading: true }, extra));
+    try {
+      let res = await translate(text, target);
+      if (res.source && res.source.split('-')[0] === target.split('-')[0] && target !== 'en') res = await translate(text, 'en');
+      if (req !== this.popReq || this.pop.hidden) return;
+      if (res.source) this.popWord.lang = res.source === 'he' ? 'iw' : res.source;
+      this.#renderPopup(anchor, Object.assign({ word: text, result: res }, extra));
+    } catch {
+      if (req !== this.popReq || this.pop.hidden) return;
+      this.#renderPopup(anchor, Object.assign({ word: text, error: true }, extra));
+    }
+    if (!extra.ocr) this.#armPopupClose(); // a bubble's words stay until you're done with them (tap to close)
+  }
+
   async #translateSelection() {
     const { spans, a, b } = this.wordSel;
     const rects = rangeRects(spans, a, b);
@@ -2626,7 +2708,7 @@ class Reader {
     else this.#armPopupClose();
   }
 
-  #renderPopup(anchor, { word, loading, result, error }) {
+  #renderPopup(anchor, { word, loading, result, error, ocr }) {
     const pop = this.pop;
     const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
     const tl = result ? esc(result.text) : '';
@@ -2642,17 +2724,30 @@ class Reader {
       this.popSound = null;
       stopPronounce();
     }
-    pop.classList.toggle('phrase', /\s/.test(word));
+    pop.classList.toggle('phrase', /\s/.test(word) || !!ocr);
+    pop.classList.toggle('ocr', !!ocr);
+    // A comic bubble: which language its words are in (read again on a change).
+    const langs = ocr
+      ? `<div class="pop-ocr" role="radiogroup" aria-label="Language of the bubbles">${[['en', 'English'], ['ja', '日本語'], ['ja-v', '日本語 縦']]
+          .map(([v, l]) => `<button role="radio" data-act="popOcrLang" data-lang="${v}" aria-checked="${ocr.lang === v}">${l}</button>`)
+          .join('')}</div>`
+      : '';
+    const status = ocr && ocr.status ? `<span class="muted">${esc(ocr.status)}</span>` : '';
     pop.innerHTML = `
       <div class="pop-main">
-        <button class="pop-word" data-act="popSpeak" aria-label="Pronounce ${esc(word)}"><span class="pop-ico"><span class="ic-say">${icons.speaker}</span><span class="ic-stop">${icons.stop}</span><svg class="pop-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16"/></svg></span><span>${esc(word)}</span></button>
-        <div class="pop-tr" dir="${rtl ? 'rtl' : 'auto'}">${loading ? '<span class="dots"><i></i><i></i><i></i></span>' : error ? '<span class="muted">No connection</span>' : tl}</div>
+        ${word ? `<button class="pop-word" data-act="popSpeak" aria-label="Pronounce ${esc(word)}"><span class="pop-ico"><span class="ic-say">${icons.speaker}</span><span class="ic-stop">${icons.stop}</span><svg class="pop-ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16"/></svg></span><span>${esc(word)}</span></button>` : ''}
+        <div class="pop-tr" dir="${rtl ? 'rtl' : 'auto'}">${status && (loading || error) ? `${loading ? '<span class="dots"><i></i><i></i><i></i></span> ' : ''}${status}` : loading ? '<span class="dots"><i></i><i></i><i></i></span>' : error ? '<span class="muted">No connection</span>' : tl}</div>
       </div>
       ${alts}
-      <div class="pop-foot">
-        <button class="pop-copy" data-act="popCopy" aria-label="Copy word">${icons.copy}</button>
+      ${langs}
+      ${
+        word
+          ? `<div class="pop-foot">
+        <button class="pop-copy" data-act="popCopy" aria-label="Copy">${icons.copy}</button>
         <a class="pop-credit" data-google href="${esc(this.#googleUrl())}" target="_blank" rel="noopener">Open in <b>Google Translate</b> <span aria-hidden="true">↗</span></a>
-      </div>`;
+      </div>`
+          : ''
+      }`;
     pop.hidden = false;
     this.#paintSound();
     const g = pop.querySelector('[data-google]');
@@ -3046,5 +3141,6 @@ class Reader {
     this.cache.destroy();
     document.documentElement.classList.remove('reading');
     this.doc.destroy();
+    if (this.kind === 'comic' && this.ocrReady) import('../comic/ocr.js').then((m) => m.closeOcr()); // its memory back
   }
 }

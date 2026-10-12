@@ -32,6 +32,9 @@ export async function open(data) {
   const p = await pdfjs();
   return p.getDocument({
     data,
+    // Never turn a PDF's fonts into code (CVE-2024-4367: a crafted PDF could run script this way in
+    // PDF.js before 4.2.67; 2.16 is the last line for old iPads, and this setting closes the hole).
+    isEvalSupported: false,
     cMapUrl: BASE + 'cmaps/',
     cMapPacked: true,
     standardFontDataUrl: BASE + 'standard_fonts/',

@@ -244,6 +244,27 @@ class ComicPage {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
+  /**
+   * The picture behind this page and where it sits on the page (as fractions),
+   * to read words from it: { img, sx, sw, ih, box: { x, y, w, h } }. The same
+   * whichever way it is read: a right-to-left page is mirrored twice on screen.
+   */
+  async source() {
+    const img = await this.doc.image(this.p.img.name);
+    if (!img) return null;
+    const W = this.doc.W;
+    const H = this.doc.heightOf(this.n, W);
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    const sw = this.p.half >= 0 ? iw / 2 : iw;
+    const sx = this.p.half === 1 ? iw / 2 : 0;
+    const k = Math.min(W / sw, H / ih);
+    const dw = sw * k;
+    const dh = ih * k;
+    const dx = this.p.half === 0 ? W - dw : this.p.half === 1 ? 0 : (W - dw) / 2;
+    return { img, sx, sw, ih, box: { x: dx / W, y: (H - dh) / 2 / H, w: dw / W, h: dh / H } };
+  }
+
   async getTextContent() {
     return { items: [], styles: {} };
   }
