@@ -4,14 +4,19 @@ import { listBooks } from '../db.js';
 import { icons } from '../icons.js';
 import { readingStats } from '../stats.js';
 import { nextInSeries, seriesOf, volumeLabel } from '../series.js';
-import { shell, esc, coverUrls, progressOf, addBooksFlow, enableDrop } from './common.js';
+import { shell, esc, coverUrls, progressOf, addBooksFlow, enableDrop, toast } from './common.js';
+import { cloudLibrary, openCloudBook } from '../sync/library.js';
 
 export async function mountHome(view, _params, nav) {
   const content = shell(view, 'home');
   const covers = coverUrls();
 
   async function render() {
-    const books = await listBooks();
+    let books = await listBooks();
+    // Books in the Drive library that aren't downloaded here count too (opening one downloads it).
+    try {
+      books = books.concat(await cloudLibrary());
+    } catch (e) {}
     await covers.load(books);
     const opened = books.filter((b) => b.lastOpenedAt).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
     // Just finished a volume of a series: offer the next one.
@@ -34,7 +39,7 @@ export async function mountHome(view, _params, nav) {
       </section>
       ${current ? heroHtml(current, upNext) : books.length ? startHtml(books) : emptyHtml()}
       ${
-        books.length
+        books.length || stats.week > 0
           ? `<section class="stats" aria-label="Reading rhythm">
         <div class="stat">
           <span class="stat-num">${stats.today}<small> min</small></span>
@@ -130,6 +135,15 @@ export async function mountHome(view, _params, nav) {
 
   content.addEventListener('click', (e) => {
     if (e.target.closest('[data-act="add"]')) addBooksFlow(view, render);
+    const cloud = e.target.closest('a[href^="#/read/cloud-"]');
+    if (cloud) {
+      e.preventDefault();
+      const id = cloud.getAttribute('href').slice('#/read/'.length);
+      cloudLibrary()
+        .then((list) => list.find((b) => b.id === id))
+        .then((b) => b && openCloudBook(view, b, nav))
+        .catch((err) => toast(view, err.message || 'Download failed', 4000));
+    }
   });
   enableDrop(view, (files) => addBooksFlow(view, render, files));
   await render();
