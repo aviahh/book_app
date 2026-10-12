@@ -2298,3 +2298,36 @@ html.reading body {
   border-color: rgba(58, 160, 255, 0.6);
   color: #fff;
 }
+
+/* Read aloud, while the voice is on its way: a ring turns around the play button, and the bar
+   says so in words (on phones too, where the label otherwise makes room for the buttons). */
+.tts-btn[data-act='ttsToggle'] {
+  position: relative;
+}
+.tts-bar[data-state='loading'] [data-act='ttsToggle']::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  right: -4px;
+  bottom: -4px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(210, 162, 108, 0.25);
+  border-top-color: #d2a26c;
+  animation: tts-spin 0.9s linear infinite;
+}
+@keyframes tts-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 460px) {
+  .tts-bar[data-state='loading'] .tts-label {
+    display: block;
+    min-width: 0;
+    max-width: 46vw;
+  }
+  .tts-bar[data-state='loading'] .tts-wave {
+    display: none;
+  }
+}

@@ -41,7 +41,9 @@ const escapeXml = (s) => s.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;
 // same request. So each request is tried again, after a short pause, until
 // audio starts to arrive. Once it has, a failure is passed on as is (the
 // listener never hears the start twice).
-const RETRY_DELAYS = [150, 250, 400, 600, 900, 900, 900, 900];
+// (A refusal tends to last for the rest of that request: the app asks again with a fresh one,
+// which usually gets through, rather than this one retrying for seconds.)
+const RETRY_DELAYS = [150, 300];
 const FIRST_AUDIO_MS = 10000;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -147,6 +149,34 @@ async function attempt(text, voice, rate) {
   });
 }
 
+/** The same neural voices through Microsoft's official Speech service (REST, one request per piece). */
+async function azureTts(env, text, voice, rate) {
+  const region = String(env.AZURE_SPEECH_REGION).replace(/[^a-z0-9]/gi, '');
+  const lang = voice.split('-').slice(0, 2).join('-');
+  const ssml =
+    `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'>` +
+    `<voice name='${voice}'><prosody rate='${rate}'>${escapeXml(text)}</prosody></voice></speak>`;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
+  try {
+    const res = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+      method: 'POST',
+      headers: {
+        'Ocp-Apim-Subscription-Key': env.AZURE_SPEECH_KEY,
+        'Content-Type': 'application/ssml+xml',
+        'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3',
+        'User-Agent': 'Folio',
+      },
+      body: ssml,
+      signal: ac.signal,
+    });
+    if (!res.ok || !res.body) return null;
+    return new Response(res.body, { headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=3600', 'X-Folio-Voice': 'azure' } });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -165,6 +195,14 @@ export default {
       return new Response('Bad request', { status: 400 });
     }
     try {
+      // Microsoft's official speech service when it's set up (AZURE_SPEECH_KEY and AZURE_SPEECH_REGION
+      // as Worker secrets; its free tier covers 500,000 characters a month); the unofficial
+      // Edge relay below when it isn't, or when the official one can't answer (e.g. the month's
+      // free allowance is used up).
+      if (env.AZURE_SPEECH_KEY && env.AZURE_SPEECH_REGION) {
+        const official = await azureTts(env, text, voice, rate).catch(() => null);
+        if (official) return official;
+      }
       return await tts(text, voice, rate);
     } catch (e) {
       return new Response(`Voice service error: ${e.message}`, { status: 502 });

@@ -2839,6 +2839,9 @@ class Reader {
       this.#clearHighlights(true);
     } else if (!this.pop.hidden) this.#armPopupClose();
     if (this.settings.fullscreen && !fsElement()) this.refullscreen = true;
+    // Back on screen while reading aloud (the screen was locked, or another app was in front):
+    // catch up with the voice, showing the page and the sentence it is on now.
+    if (this.aloud && this.speech.active && this.lastPiece != null) this.#onPiece(this.lastPiece);
   }
 
   /** Close the bubble by itself after the chosen delay (Settings; 0 = never). */
@@ -3024,13 +3027,19 @@ class Reader {
     const r = this.aloud;
     const seg = r && r.segs[i];
     if (!seg) return;
-    if (i > 12) r.segs[i - 12] = null; // keep only a little behind
+    this.lastPiece = i;
+    if (i > 12 && r.segs[i - 12]) r.segs[i - 12] = null; // keep only a little behind
     const token = (this.pieceToken = (this.pieceToken || 0) + 1);
+    // Off screen (locked, or another app in front): nothing to show now; caught up on return.
+    if (document.hidden) return;
     const n = seg.parts[0].page;
     if (this.mode === 'double') {
+      // A page turn still under way finishes first; then the spread with this sentence.
+      for (let t = 0; t < 40 && this.busy && token === this.pieceToken; t++) await new Promise((res) => setTimeout(res, 80));
+      if (token !== this.pieceToken) return;
       const shown = visiblePages(spreadPages('double', this.spread, this.total));
-      if (!shown.includes(n) && !this.busy) await this.go(spreadOf('double', n));
-    } else if (!this.#shownPageText(n)) {
+      if (!shown.includes(n)) await this.go(spreadOf('double', n));
+    } else if (!this.#pageInView(n)) {
       this.#scrollToPage(n);
     }
     // The page's text layer may still be building after a turn.
@@ -3060,16 +3069,41 @@ class Reader {
     }
     if (!rects.length) return;
     this.#drawHighlights(rects, 'speak');
-    // One-page scroll: keep the sentence in view, about a third down the screen.
-    if (this.mode === 'single') {
-      const top = Math.min(...rects.map((x) => x.top));
-      const bottom = Math.max(...rects.map((x) => x.bottom));
-      const box = this.el.getBoundingClientRect();
-      if (top < box.top + this.H * 0.12 || bottom > box.top + this.H * 0.8) {
-        const cam = this.camera;
-        cam.animateTo(cam.s, cam.tx, cam.ty + (box.top + this.H * 0.3 - top), 500);
-      }
+    this.#keepInView(rects);
+  }
+
+  /** Is any of page n on screen now (one-page scroll)? */
+  #pageInView(n) {
+    const root = this.mode === 'single' ? this.stripEl : this.bookEl;
+    const el = root && root.querySelector(`.slot .page[data-page="${n}"]`);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const box = this.el.getBoundingClientRect();
+    return r.bottom > box.top + 40 && r.top < box.bottom - 40;
+  }
+
+  /**
+   * The sentence being read stays in sight: in one-page scroll it is brought to about a third
+   * down the screen when it nears an edge; zoomed in, the view also moves sideways to its lines.
+   */
+  #keepInView(rects) {
+    const cam = this.camera;
+    const zoomed = cam.s > 1.02;
+    if (this.mode !== 'single' && !zoomed) return; // a whole spread is in view
+    const top = Math.min(...rects.map((x) => x.top));
+    const bottom = Math.max(...rects.map((x) => x.bottom));
+    const left = Math.min(...rects.map((x) => x.left));
+    const right = Math.max(...rects.map((x) => x.right));
+    const box = this.el.getBoundingClientRect();
+    let dy = 0;
+    let dx = 0;
+    if (top < box.top + this.H * 0.12 || bottom > box.top + this.H * 0.82) dy = box.top + this.H * 0.3 - top;
+    if (zoomed && (left < box.left + this.W * 0.04 || right > box.right - this.W * 0.04)) {
+      // Wider than the screen: start of the lines in view; otherwise centred.
+      dx = right - left > this.W * 0.92 ? box.left + this.W * 0.05 - left : box.left + this.W / 2 - (left + right) / 2;
     }
+    if (this.rtl) dx = -dx; // (a right-to-left comic's page area is mirrored)
+    if (dx || dy) cam.animateTo(cam.s, cam.tx + dx, cam.ty + dy, 500);
   }
 
   #onSpeechState(state) {
@@ -3097,7 +3131,17 @@ class Reader {
     btn.setAttribute('aria-label', state === 'paused' ? 'Resume' : 'Pause');
     // Say so when the chosen voice couldn't be reached and another one is reading.
     const other = this.speech.fellBack ? (this.speech.usingFallback ? ' · device voice' : ' · Google voice') : '';
-    bar.querySelector('.tts-label').textContent = (state === 'loading' ? 'Preparing…' : state === 'paused' ? 'Paused' : 'Reading aloud') + other;
+    const label = bar.querySelector('.tts-label');
+    clearTimeout(this.ttsSlowTimer);
+    if (state === 'loading') {
+      // Taking a while (a weak signal, a busy voice service): keep saying what is happening.
+      label.textContent = (navigator.onLine === false ? 'No connection · trying the device voice…' : 'Getting the voice ready…') + other;
+      this.ttsSlowTimer = setTimeout(() => {
+        if (bar.dataset.state === 'loading') label.textContent = 'Still getting the voice ready (slow connection)…';
+      }, 6000);
+      return;
+    }
+    label.textContent = (state === 'paused' ? 'Paused' : 'Reading aloud') + other;
   }
 
   /** Keep the screen on while reading aloud (where the browser allows it). */

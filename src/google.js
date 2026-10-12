@@ -222,7 +222,7 @@ const NEEDS_UNLOCK = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.pla
 const KEEP_BACK = 3; // pieces kept behind the current one (a few lines)
 const READY_AHEAD = 4; // pieces downloaded ahead
 const BUFFER_AHEAD = 40; // seconds of joined audio queued in the stream at most
-const MAX_FETCHES = 3; // voice requests in flight at once
+const MAX_FETCHES = 2; // voice requests in flight at once (the service refuses bursts)
 const MS = window.MediaSource;
 const MSE_MP3 = !!(MS && MS.isTypeSupported && MS.isTypeSupported('audio/mpeg'));
 const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -368,21 +368,25 @@ export class Speech {
         r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status)),
       );
     const slot = () => (this.fetching < MAX_FETCHES ? Promise.resolve() : new Promise((r) => this.waiting.push(r)));
-    const p = slot().then(() => {
-      this.fetching++;
-      const done = () => {
-        this.fetching--;
-        const next = this.waiting.shift();
-        if (next) next();
-      };
-      // A passing hiccup (weak Wi-Fi, a busy moment at the voice service)
-      // shouldn't swap the voice: try again before giving up on it.
-      const q = get()
-        .catch(() => new Promise((r) => setTimeout(r, 600)).then(get))
-        .then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? b : Promise.reject(new Error('no audio'))));
-      q.then(done, done);
-      return q;
-    });
+    // The sentence playback starts with goes first, alone: the service turns requests away when
+    // several come at once, and that is the one being waited for. The ones after it follow.
+    const first = i !== this.startPiece && this.bytes.get(this.startPiece);
+    const p = Promise.resolve(first && first.catch(() => {}))
+      .then(slot)
+      .then(() => {
+        this.fetching++;
+        const done = () => {
+          this.fetching--;
+          const next = this.waiting.shift();
+          if (next) next();
+        };
+        // The voice service turns some requests away (it is shared with many); a fresh request
+        // a moment later usually gets through. A few quick tries before giving up on the voice.
+        const tries = (k) => get().catch((e) => (k >= 3 || navigator.onLine === false ? Promise.reject(e) : new Promise((r) => setTimeout(r, [300, 700, 1200][k])).then(() => tries(k + 1))));
+        const q = tries(0).then((b) => (b.size > 64 && /audio|mpeg|octet/.test(b.type || 'audio') ? b : Promise.reject(new Error('no audio'))));
+        q.then(done, done);
+        return q;
+      });
     this.bytes.set(i, p);
     return p;
   }
@@ -419,6 +423,7 @@ export class Speech {
       a.pause();
     }
     this.index = i;
+    this.startPiece = i;
     this.cur = 0;
     this.#set('loading');
     if (this.provider === 'edge' && MSE_MP3 && !this.noMse) return this.#msStart(i, gen);
