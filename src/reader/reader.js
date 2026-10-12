@@ -1370,6 +1370,7 @@ class Reader {
   }
 
   #afterMove() {
+    if (this.readMode && this.kind === 'comic') setTimeout(() => this.#ocrOnScreen(), 300);
     this.#updateIndicator();
     this.#saveProgress();
     if (!this.jumpPending) {
@@ -1870,7 +1871,13 @@ class Reader {
         const lang = btn.dataset.lang;
         this.book.comic = Object.assign({}, this.book.comic, { ocr: lang });
         updateBook(this.book.id, { comic: this.book.comic });
+        // What was read in the other language goes; it is read again as needed.
+        const pages = [...this.doc.ocr.keys()];
+        this.doc.ocr.clear();
+        for (const n of pages) this.#refreshOcrLayers(n);
+        this.#clearHighlights();
         if (this.ocrAt) this.#readBubble(this.ocrAt.cx, this.ocrAt.cy);
+        this.#ocrOnScreen();
         return;
       }
       case 'popCopy':
@@ -2581,13 +2588,103 @@ class Reader {
     const bw = (res.box.w / src.sw) * box.w * r.width;
     const bh = (res.box.h / src.ih) * box.h * r.height;
     const rect = { left: bx, top: by, width: bw, height: bh, right: bx + bw, bottom: by + bh };
-    if (res.bubble) this.#drawHighlights([rect], 'bubble');
     const anchor = this.lock.rectToLocal(rect);
     if (!res.text || res.text.replace(/[^\p{L}\p{N}]/gu, '').length < 2) {
+      if (res.bubble) this.#drawHighlights([rect], 'bubble');
       this.#renderPopup(anchor, { word: '', error: true, ocr: { lang, status: 'No words found here. Press and hold inside a speech bubble.' } });
       return this.#armPopupClose();
     }
-    this.#translateText(res.text, anchor, { ocr: { lang } }, req);
+    // The words go into the page's text layer: from here on they're text like any other.
+    const n = +pageEl.dataset.page;
+    const bi = this.doc.addBubble(n, { box: res.box, lines: res.lines, text: res.text });
+    await this.#refreshOcrLayers(n);
+    if (req !== this.popReq) return;
+    // Held on a word: that word (drag the handles for more). Held elsewhere in the bubble: all of it.
+    const spans = collectSpans(this.#textLayers());
+    const pos = hitTest(spans, cx, cy, { mode: 'char', maxDist: 4 });
+    const word = pos && wordAt(spans, pos);
+    if (word && spans[word.a.index].dataset.bubble === String(bi)) {
+      this.wordSel = { spans, a: word.a, b: word.b };
+    } else {
+      const mine = spans.map((s, i) => (s.closest('.page') === pageEl && s.dataset.bubble === String(bi) ? i : -1)).filter((i) => i >= 0);
+      if (!mine.length) return this.#translateText(res.text, anchor, { ocr: { lang } }, req);
+      const last = mine[mine.length - 1];
+      this.wordSel = { spans, a: { index: mine[0], offset: 0 }, b: { index: last, offset: spans[last].textContent.length } };
+    }
+    this.#translateSelection();
+  }
+
+  /** Lay the words read on page n into its text layer(s) again (after more of them were read). */
+  async #refreshOcrLayers(n) {
+    const page = await this.doc.getPage(n);
+    const layers = [...this.el.querySelectorAll(`.slot .page[data-page="${n}"] .textLayer`)];
+    await Promise.all(layers.map((tl) => page.buildTextLayer(tl, tl.clientWidth || this.pw)));
+  }
+
+  /** The language the bubbles of this comic are read in. */
+  #ocrLang() {
+    return (this.book.comic && this.book.comic.ocr) || 'en';
+  }
+
+  /**
+   * Every bubble of page n, read (once): for drag-to-read and reading on in comics.
+   * Says how far it has got in the read-aloud bar while the bar waits.
+   */
+  async #ocrPage(n) {
+    const have = this.doc.ocr.get(n);
+    if (have && have.whole) return;
+    const page = await this.doc.getPage(n);
+    const src = page.source && (await page.source());
+    if (!src) return;
+    const { readPage, inReadingOrder } = await import('../comic/ocr.js');
+    const note = (t) => {
+      const bar = this.el.querySelector('.tts-bar');
+      if (this.readMode && bar.dataset.state === 'ready') bar.querySelector('.tts-label').textContent = t;
+    };
+    note(this.ocrReady ? 'Finding the words on the page…' : 'Getting text recognition ready…');
+    let list;
+    try {
+      list = await readPage(src.img, { sx: src.sx, sw: src.sw, lang: this.#ocrLang(), rtl: this.rtl }, (done, total) => total && note(`Reading the bubbles… ${done} of ${total}`));
+      this.ocrReady = true;
+    } catch (e) {
+      console.warn('text recognition', e);
+      note('Couldn’t read the words on this page.');
+      return;
+    }
+    // Bubbles read by pressing on them that the page search missed stay too.
+    const before = ((this.doc.ocr.get(n) || {}).bubbles || []).filter((b) => !list.some((x) => this.#overlaps(x.box, b.box)));
+    this.doc.setPageText(n, inReadingOrder(list.concat(before), this.rtl));
+    await this.#refreshOcrLayers(n);
+    if (this.readMode) this.#onSpeechState(this.speech.state); // the bar's own words again
+  }
+
+  #overlaps(p, q) {
+    const x = Math.max(0, Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x));
+    const y = Math.max(0, Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y));
+    return x * y > 0.4 * Math.min(p.w * p.h, q.w * q.h);
+  }
+
+  /** The pages on screen now. */
+  #pagesOnScreen() {
+    const box = this.el.getBoundingClientRect();
+    return [...this.el.querySelectorAll('.slot .page[data-page]')]
+      .filter((p) => {
+        const r = p.getBoundingClientRect();
+        return r.bottom > box.top && r.top < box.bottom && r.right > box.left && r.left < box.right;
+      })
+      .map((p) => +p.dataset.page)
+      .filter((n, i, all) => all.indexOf(n) === i);
+  }
+
+  /** In read-aloud mode in a comic: the bubbles of the pages on screen are read, ready to be selected or read on from. */
+  async #ocrOnScreen() {
+    if (this.kind !== 'comic' || !this.readMode || this.ocrPaging) return;
+    this.ocrPaging = true;
+    try {
+      for (const n of this.#pagesOnScreen()) await this.#ocrPage(n);
+    } finally {
+      this.ocrPaging = false;
+    }
   }
 
   /** The words of a bubble (or any text) in the translation bubble. */
@@ -2709,6 +2806,7 @@ class Reader {
   }
 
   #renderPopup(anchor, { word, loading, result, error, ocr }) {
+    if (!ocr && this.kind === 'comic') ocr = { lang: this.#ocrLang() }; // words from a comic: their language can be changed
     const pop = this.pop;
     const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
     const tl = result ? esc(result.text) : '';
@@ -2877,6 +2975,7 @@ class Reader {
     this.el.classList.add('read-mode');
     this.el.querySelector('[data-act="speak"]').classList.add('on');
     this.#onSpeechState(this.speech.state);
+    this.#ocrOnScreen();
   }
 
   #exitReadMode() {
@@ -2928,13 +3027,14 @@ class Reader {
     const layer = root.querySelector(`.slot .page[data-page="${n}"] .textLayer`);
     const spans = layer ? collectSpans([layer]) : [];
     if (!spans.length) return null;
-    return { spans, ...pageText(spans, layer.getBoundingClientRect(), { furniture: this.kind === 'epub' ? 'marks' : true }) };
+    return { spans, ...pageText(spans, layer.getBoundingClientRect(), { furniture: this.kind === 'epub' ? 'marks' : this.kind !== 'comic' }) };
   }
 
   /** The text of page n, read from a hidden text layer (pages not on screen yet). */
   async #pageTextOf(n) {
     const r = this.aloud;
     if (r.texts.has(n)) return r.texts.get(n);
+    if (this.kind === 'comic') await this.#ocrPage(n); // (a comic's words are read from its pictures first)
     const shown = this.#shownPageText(n);
     let text = shown ? shown.text : null;
     if (text == null) {
@@ -2949,7 +3049,7 @@ class Reader {
       this.el.append(box);
       try {
         await buildTextLayer(page, tl, this.pw);
-        text = pageText(collectSpans([tl]), tl.getBoundingClientRect(), { furniture: this.kind === 'epub' ? 'marks' : true }).text;
+        text = pageText(collectSpans([tl]), tl.getBoundingClientRect(), { furniture: this.kind === 'epub' ? 'marks' : this.kind !== 'comic' }).text;
       } catch (e) {
         text = '';
       } finally {

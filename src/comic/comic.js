@@ -112,6 +112,9 @@ export class ComicDoc {
     this.images = new Map();
     this.pageObjs = new Map();
     this.fixedImages = true;
+    // Words read from the pictures (text recognition), per page: { bubbles: [{ box, lines, text }], whole }
+    // ("whole": every bubble of the page has been looked for, not just ones pressed on).
+    this.ocr = new Map();
     // Base page size: 1000 wide, the usual page shape.
     this.W = 1000;
     this.H = Math.round(1000 / comic.aspect);
@@ -179,6 +182,26 @@ export class ComicDoc {
       URL.revokeObjectURL(old.url);
     }
     return e.promise;
+  }
+
+  /** A bubble read on page n (pressed on): added, or replacing what was read in the same place. */
+  addBubble(n, b) {
+    const e = this.ocr.get(n) || { bubbles: [], whole: false };
+    const same = (p) => {
+      const x = Math.max(0, Math.min(p.box.x + p.box.w, b.box.x + b.box.w) - Math.max(p.box.x, b.box.x));
+      const y = Math.max(0, Math.min(p.box.y + p.box.h, b.box.y + b.box.h) - Math.max(p.box.y, b.box.y));
+      return x * y > 0.4 * Math.min(p.box.w * p.box.h, b.box.w * b.box.h);
+    };
+    const i = e.bubbles.findIndex(same);
+    if (i >= 0) e.bubbles[i] = b;
+    else e.bubbles.push(b);
+    this.ocr.set(n, e);
+    return e.bubbles.indexOf(b);
+  }
+
+  /** Every bubble of page n, in reading order. */
+  setPageText(n, bubbles) {
+    this.ocr.set(n, { bubbles, whole: true });
   }
 
   destroy() {
@@ -262,7 +285,8 @@ class ComicPage {
     const dw = sw * k;
     const dh = ih * k;
     const dx = this.p.half === 0 ? W - dw : this.p.half === 1 ? 0 : (W - dw) / 2;
-    return { img, sx, sw, ih, box: { x: dx / W, y: (H - dh) / 2 / H, w: dw / W, h: dh / H } };
+    this.geo = { sx, sw, ih, box: { x: dx / W, y: (H - dh) / 2 / H, w: dw / W, h: dh / H } };
+    return Object.assign({ img }, this.geo);
   }
 
   async getTextContent() {
@@ -273,8 +297,48 @@ class ComicPage {
     return [];
   }
 
-  buildTextLayer() {
-    return Promise.resolve();
+  /**
+   * The words read from this page's bubbles as an invisible text layer over the picture, so they
+   * can be selected, translated and read aloud like any text. Each word sits where it is drawn.
+   */
+  async buildTextLayer(container, cssWidth) {
+    const e = this.doc.ocr.get(this.n);
+    container.classList.add('reflow', 'ocr');
+    container.replaceChildren();
+    if (!e || !e.bubbles.length) return;
+    if (!this.geo) await this.source();
+    const g = this.geo;
+    if (!g) return;
+    const W = cssWidth;
+    const H = container.clientHeight || (cssWidth * this.doc.heightOf(this.n, this.doc.W)) / this.doc.W;
+    const fx = (x) => (g.box.x + ((x - g.sx) / g.sw) * g.box.w) * W;
+    const fy = (y) => (g.box.y + (y / g.ih) * g.box.h) * H;
+    const spans = [];
+    e.bubbles.forEach((b, bi) => {
+      for (const l of b.lines) {
+        const top = Math.min(...l.words.map((w) => w.y0));
+        const bottom = Math.max(...l.words.map((w) => w.y1));
+        const size = Math.max(4, (fy(bottom) - fy(top)) * 0.95);
+        l.words.forEach((w, wi) => {
+          const s = document.createElement('span');
+          s.setAttribute('role', 'presentation');
+          s.dataset.bubble = String(bi);
+          const next = l.words[wi + 1];
+          s.textContent = next ? `${w.text} ` : w.text;
+          s.style.cssText = `left:${fx(w.x0)}px;top:${fy(top)}px;font-size:${size}px;font-family:sans-serif;transform:none`;
+          spans.push([s, Math.max(2, next ? fx(next.x0) - fx(w.x0) : fx(w.x1) - fx(w.x0))]);
+          container.append(s);
+        });
+        // Lines end with a break, as text does, so words of two lines never run together.
+        container.append(document.createElement('br'));
+      }
+    });
+    const zoom = container.offsetWidth ? container.getBoundingClientRect().width / container.offsetWidth : 0;
+    if (!zoom) return;
+    const actual = spans.map(([s]) => s.getBoundingClientRect().width / zoom);
+    spans.forEach(([s, want], i) => {
+      if (actual[i] > 0) s.style.transform = `scaleX(${want / actual[i]})`;
+    });
   }
 }
 

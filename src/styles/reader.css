@@ -2331,3 +2331,9 @@ html.reading body {
     display: none;
   }
 }
+/* Words read from a comic's pictures: in a right-to-left comic the page area is mirrored on screen,
+   so the invisible text layer over the picture is mirrored back (the words sit where they're drawn). */
+.reader.rtl .textLayer.ocr {
+  transform: scaleX(-1);
+  transform-origin: 50% 50%;
+}
