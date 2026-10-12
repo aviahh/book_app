@@ -234,3 +234,47 @@
 .dl-pill.done .dl-pill-pct::before {
   content: '✓ ';
 }
+/* Hiding a download: the card shrinks towards the corner, the pill there introduces itself */
+.dl-overlay .import-card {
+  transition: transform 0.26s cubic-bezier(0.4, 0, 0.6, 1), opacity 0.26s;
+}
+.dl-overlay.leaving {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  pointer-events: none;
+  transition: background 0.26s;
+}
+.dl-overlay.leaving .import-card {
+  transform: translate(32vw, 40vh) scale(0.2);
+  opacity: 0;
+}
+.dl-pill {
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+}
+.dl-pill-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.dl-pill-intro {
+  display: none;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.dl-pill.intro .dl-pill-intro {
+  display: block;
+}
+.dl-pill.intro {
+  animation: dl-pill-in 0.5s cubic-bezier(0.3, 0.7, 0.3, 1.3);
+  box-shadow: 0 0 0 2px var(--accent), 0 10px 30px rgba(0, 0, 0, 0.28);
+}
+@keyframes dl-pill-in {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+}

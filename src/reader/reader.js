@@ -3129,8 +3129,9 @@ class Reader {
     try {
       localStorage.removeItem(READING_KEY);
     } catch (err) {}
-    // Leaving for Settings keeps full screen; leaving the book ends it.
-    if (!staying && !location.hash.startsWith('#/settings')) exitFullscreen();
+    // Full screen stays after the book closes: entering it again for the next book would make
+    // Android show its "swipe to exit full screen" notice every time. (The full-screen button
+    // in the reader still turns it off.)
     this.speech.stop(true);
     this.#keepAwake(false);
     this.tools.destroy();

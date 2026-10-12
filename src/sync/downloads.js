@@ -51,7 +51,14 @@ export async function roomFor(size) {
  * Resolves { book, hidden } (hidden: the card had been put away, so don't
  * jump into the book), or null if cancelled. Errors are passed on.
  */
-export async function withProgress({ title, from, size }, run) {
+const running = new Map(); // key → { show() }: one download per book at a time
+
+export async function withProgress({ title, from, size, key }, run) {
+  // Already downloading this one (its card was hidden): show it again, don't start a second.
+  if (key && running.has(key)) {
+    running.get(key).show();
+    return null;
+  }
   if (!(await roomFor(size))) return null;
   const ctl = control();
   let hidden = false;
@@ -76,13 +83,30 @@ export async function withProgress({ title, from, size }, run) {
     const pct = `${Math.round(fraction * 100)}%`;
     card.querySelector('.sync-bar i').style.width = pct;
     card.querySelector('.dl-pct').textContent = pct;
-    if (!pill.dataset.done) pill.innerHTML = `<span class="dl-pill-text">${esc(title)}</span><span class="dl-pill-pct">${pct}</span><i class="dl-pill-bar" style="width:${pct}"></i>`;
+    if (!pill.dataset.done) pill.innerHTML = `<span class="dl-pill-intro">Downloading in the background</span><span class="dl-pill-row"><span class="dl-pill-text">${esc(title)}</span><span class="dl-pill-pct">${pct}</span></span><i class="dl-pill-bar" style="width:${pct}"></i>`;
   };
+  let introTimer = 0;
   const hide = (h) => {
     hidden = h;
-    card.hidden = h;
-    pill.hidden = !h;
+    if (!h) {
+      clearTimeout(introTimer);
+      pill.classList.remove('intro');
+      pill.hidden = true;
+      card.hidden = false;
+      card.classList.remove('leaving');
+      return;
+    }
+    // The card shrinks away towards the corner, and the pill there says what it is, for a moment.
+    card.classList.add('leaving');
+    setTimeout(() => {
+      if (hidden) card.hidden = true;
+    }, 260);
+    pill.hidden = false;
+    pill.classList.add('intro');
+    clearTimeout(introTimer);
+    introTimer = setTimeout(() => pill.classList.remove('intro'), 4000);
   };
+  if (key) running.set(key, { show: () => hide(false) });
   card.addEventListener('click', (e) => {
     const b = e.target.closest('[data-dl]');
     if (!b) return;
@@ -98,16 +122,19 @@ export async function withProgress({ title, from, size }, run) {
     hide(false);
   });
   draw();
+  const done = () => key && running.delete(key);
   try {
     const book = await run((f) => {
       fraction = f;
       draw();
     }, ctl);
+    done();
     card.remove();
     if (!hidden) {
       pill.remove();
       return { book, hidden: false };
     }
+    pill.classList.remove('intro');
     // Finished while put away: say so in the pill for a while (tap to open).
     pill.dataset.done = '1';
     if (book) pill.dataset.book = book.id;
@@ -116,6 +143,7 @@ export async function withProgress({ title, from, size }, run) {
     setTimeout(() => pill.remove(), 12000);
     return { book, hidden: true };
   } catch (e) {
+    done();
     card.remove();
     pill.remove();
     if (ctl.cancelled) return null;

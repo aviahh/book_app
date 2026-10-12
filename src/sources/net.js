@@ -6,6 +6,11 @@ const api = (path) => new URL('api/' + path, document.baseURI).href;
 const relayed = new Set(); // "feed:origin" / "book:origin" that need the relay
 
 export class NeedsLogin extends Error {}
+/** The catalog's server is having trouble (5xx, or no answer): worth trying again. */
+export class Busy extends Error {}
+
+const directOk = new Set(); // origins that have answered the browser directly at least once
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The login, only for an address on the catalog's own origin (over https); never for links elsewhere. */
 const authTo = (url, login) => (login && originOf(url) === login.origin && /^https:/.test(url) ? login.auth : '');
@@ -26,29 +31,55 @@ async function relayError(res) {
     msg = (await res.json()).error || msg;
   } catch (e) {}
   if (res.status === 401) throw new NeedsLogin(msg);
+  if (res.status >= 500) throw new Busy(msg);
   throw new Error(msg);
 }
 
-/** A catalog page as text: { text, url } (url = where it ended up, for its relative links). */
-export async function getText(url, login) {
+async function textOnce(url, login) {
   const auth = authTo(url, login);
+  const origin = originOf(url);
   if (!viaRelay('feed', url)) {
     try {
       const headers = { Accept: 'application/atom+xml, application/opds+json, application/xml, application/json;q=0.9, */*;q=0.5' };
       if (auth) headers.Authorization = auth;
       const res = await fetch(url, { mode: 'cors', credentials: 'omit', headers, referrerPolicy: 'no-referrer' });
       if (res.status === 401) throw new NeedsLogin('This catalog needs a login.');
+      if (res.status >= 500) throw new Busy(`The catalog answered ${res.status}.`);
       if (!res.ok) throw new Error(`The catalog answered ${res.status}.`);
+      directOk.add(origin);
       return { text: await res.text(), url: res.url || url };
     } catch (e) {
-      if (e instanceof NeedsLogin || !(e instanceof TypeError)) throw e;
-      relayed.add(`feed:${originOf(url)}`); // not allowed from a browser: use the relay from now on
+      if (!(e instanceof TypeError)) throw e;
+      // A catalog that has answered here before failed without saying why: most likely its server
+      // is struggling (error pages come without the permission a browser needs). Try the relay this
+      // once. One that never answered here doesn't allow browsers: use the relay from now on.
+      if (!directOk.has(origin)) relayed.add(`feed:${origin}`);
     }
   }
-  const res = await fetch(api(`fetch?url=${encodeURIComponent(url)}`), { headers: relayHeaders(url, login), cache: 'no-store' });
+  let res;
+  try {
+    res = await fetch(api(`fetch?url=${encodeURIComponent(url)}`), { headers: relayHeaders(url, login), cache: 'no-store' });
+  } catch (e) {
+    throw navigator.onLine === false ? e : new Busy('No answer.');
+  }
   if (!res.ok) await relayError(res);
   if (res.headers.get('X-Folio-Kind') !== 'feed') throw new Error('That isn’t a catalog page.');
   return { text: await res.text(), url: res.headers.get('X-Folio-Url') || url };
+}
+
+/** A catalog page as text: { text, url } (url = where it ended up, for its relative links). A busy server is asked up to three times. */
+export async function getText(url, login) {
+  let last;
+  for (const pause of [0, 1500, 4000]) {
+    if (pause) await wait(pause);
+    try {
+      return await textOnce(url, login);
+    } catch (e) {
+      last = e;
+      if (!(e instanceof Busy) || navigator.onLine === false) throw e;
+    }
+  }
+  throw last;
 }
 
 function xhr(url, headers, onProgress, hint = 0, ctl = null) {
@@ -77,6 +108,7 @@ export async function getBook(url, login, onProgress = () => {}, sizeHint = 0, c
       const x = await xhr(url, auth ? { Authorization: auth } : {}, onProgress, sizeHint, ctl);
       if (x.status === 401) throw new NeedsLogin('This catalog needs a login.');
       if (x.status === 200) return { blob: x.response, type: x.getResponseHeader('Content-Type') || '', url: x.responseURL || url };
+      if (x.status >= 500) throw new Busy(`Download failed (${x.status}).`);
       if (x.status !== 0) throw new Error(`Download failed (${x.status}).`);
     } catch (e) {
       if (!(e instanceof TypeError)) throw e;
@@ -94,6 +126,7 @@ export async function getBook(url, login, onProgress = () => {}, sizeHint = 0, c
       msg = JSON.parse(text).error || msg;
     } catch (e) {}
     if (x.status === 401) throw new NeedsLogin(msg);
+    if (x.status >= 500) throw new Busy(msg);
     throw new Error(msg);
   }
   if (x.getResponseHeader('X-Folio-Kind') !== 'book') throw new Error('That isn’t a book file Folio can read.');

@@ -107,7 +107,7 @@ export async function inDrive(books) {
 
 /** Download a cloud book (with a quiet progress card), then open it. */
 export async function openCloudBook(view, book, nav) {
-  const got = await withProgress({ title: book.title, from: 'Google Drive', size: book.size }, (onProgress, ctl) => downloadBook(book.syncId, onProgress, ctl));
+  const got = await withProgress({ title: book.title, from: 'Google Drive', size: book.size, key: 'drive:' + book.syncId }, (onProgress, ctl) => downloadBook(book.syncId, onProgress, ctl));
   if (!got) return null; // cancelled
   if (got.book && !got.hidden) nav(`#/read/${got.book.id}`);
   return got.book;
@@ -255,7 +255,7 @@ export async function mountFamilyPage(content, owner, view, nav, toast) {
     const b = lib.books.find((x) => x.sid === card.dataset.sid);
     try {
       const size = (b.drive && b.drive.size) || (b.meta && b.meta.size) || 0;
-      const got = await withProgress({ title: b.meta.title, from: `${ownerName(lib.email)}’s library`, size }, (onProgress, ctl) => downloadFamilyBook(owner, b, onProgress, ctl));
+      const got = await withProgress({ title: b.meta.title, from: `${ownerName(lib.email)}’s library`, size, key: 'family:' + b.sid }, (onProgress, ctl) => downloadFamilyBook(owner, b, onProgress, ctl));
       if (got && got.book && !got.hidden) nav(`#/read/${got.book.id}`);
     } catch (err) {
       toast(view, err.message || 'Download failed', 4000);

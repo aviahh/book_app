@@ -9,7 +9,7 @@
 import { shell, esc, toast } from './common.js';
 import { icons } from '../icons.js';
 import { catalogs, catalogOf, loginFor, addCatalog, removeCatalog } from '../sources/catalogs.js';
-import { getText, getBook, NeedsLogin } from '../sources/net.js';
+import { getText, getBook, NeedsLogin, Busy } from '../sources/net.js';
 import { parseFeed, parseOsd, searchUrl, formatOf } from '../sources/opds.js';
 import { listBooks, updateBook } from '../db.js';
 import { importFile } from '../pdf.js';
@@ -35,10 +35,44 @@ const host = (url) => {
 const link = (params) => '#/sources?' + Object.keys(params).filter((k) => params[k]).map((k) => `${k}=${encodeURIComponent(params[k])}`).join('&');
 const img = (src, cls = '') => (src ? `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '');
 
+// Catalog pages are kept on the device for a while (not those of catalogs with a login): going
+// back is instant, and when a catalog's server is down its pages still open (marked as saved).
+const KEEP = 'folio-catalogs';
+const FRESH = 30 * 60 * 1000;
+async function saved(url) {
+  try {
+    const r = await (await caches.open(KEEP)).match(url);
+    return r ? { text: await r.text(), url: r.headers.get('X-Url') || url, at: Number(r.headers.get('X-At')) || 0 } : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function keep(url, got) {
+  try {
+    const c = await caches.open(KEEP);
+    await c.put(url, new Response(got.text, { headers: { 'Content-Type': 'text/plain', 'X-Url': got.url, 'X-At': String(Date.now()) } }));
+    const keys = await c.keys();
+    for (const k of keys.slice(0, Math.max(0, keys.length - 80))) await c.delete(k);
+  } catch (e) {}
+}
+
 async function loadPage(url, auth) {
   if (pages.has(url)) return pages.get(url);
-  const got = await getText(url, auth);
-  const page = parseFeed(got.text, got.url);
+  const old = auth ? null : await saved(url);
+  let page;
+  if (old && Date.now() - old.at < FRESH) {
+    page = parseFeed(old.text, old.url);
+  } else {
+    try {
+      const got = await getText(url, auth);
+      page = parseFeed(got.text, got.url);
+      if (!auth) keep(url, got);
+    } catch (e) {
+      if (!old) throw e;
+      page = parseFeed(old.text, old.url);
+      page.stale = true; // the catalog isn't answering: its saved page
+    }
+  }
   pages.set(url, page);
   return page;
 }
@@ -190,7 +224,9 @@ async function drawPage(content, view, nav, cat, url, entryId, words) {
         ? 'You’re offline. Catalogs need an internet connection.'
         : e instanceof NeedsLogin
           ? 'This catalog needs a login. Remove it and add it again with your user name and password.'
-          : String(e.message || 'Couldn’t open the catalog.');
+          : e instanceof Busy
+            ? `${cat.name} isn’t answering right now: its server is busy or down (this happens to free catalogs at times). Folio tried three times. Please try again in a few minutes.`
+            : String(e.message || 'Couldn’t open the catalog.');
     content.querySelector('.src-wait').outerHTML = `<p class="src-note">${esc(msg)}</p><button class="btn subtle" data-src="retry">Try again</button>`;
     content.addEventListener('click', (ev) => ev.target.closest('[data-src="retry"]') && (pages.delete(url), drawPage(content, view, nav, cat, url, entryId, words)));
     return;
@@ -228,6 +264,7 @@ async function drawPage(content, view, nav, cat, url, entryId, words) {
       <section class="src">
         <a class="crumb" data-back href="${esc(isStart ? '#/sources' : link({ c: cat.id }))}">${icons.back}<span>${esc(isStart ? 'Find books' : 'Back')}</span></a>
         <h1 class="src-title">${esc(title)}</h1>
+        ${page.stale ? `<p class="src-note src-stale">${esc(cat.name)} isn’t answering right now, so this is the copy Folio saved earlier.</p>` : ''}
         ${template ? `<form class="search src-search" data-src-search>${icons.search}<input type="search" name="q" placeholder="Search ${esc(cat.name)}" aria-label="Search this catalog" value="${esc(words)}"></form>` : ''}
         ${Object.keys(groups)
           .map((g) => `<div class="src-facets" role="group" aria-label="${esc(g)}">${groups[g].map((f) => `<a class="src-facet${f.active ? ' on' : ''}" href="${esc(link({ c: cat.id, u: f.href }))}">${esc(f.title)}</a>`).join('')}</div>`)
@@ -258,7 +295,7 @@ async function drawPage(content, view, nav, cat, url, entryId, words) {
     } catch (err) {
       more.disabled = false;
       more.textContent = 'More';
-      toast(view, String(err.message || 'Couldn’t load more.'), 4000);
+      toast(view, err instanceof Busy ? `${cat.name} isn’t answering right now. Try again in a moment.` : String(err.message || 'Couldn’t load more.'), 4000);
     }
   });
   draw();
@@ -342,7 +379,7 @@ async function drawBook(content, view, nav, cat, url, it, isStart) {
       have = book || (await inLibrary(it.id, it.title));
       toast(view, 'Added to your library.');
     } catch (err) {
-      note = ctl.cancelled ? '' : navigator.onLine === false ? 'The connection dropped. Please try again.' : String(err.message || 'Download failed.');
+      note = ctl.cancelled ? '' : navigator.onLine === false ? 'The connection dropped. Please try again.' : err instanceof Busy ? `${cat.name} isn’t answering right now: its server is busy. Please try again in a few minutes.` : String(err.message || 'Download failed.');
     } finally {
       downloading.delete(f.href);
     }
