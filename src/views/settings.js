@@ -1,4 +1,5 @@
 import { getSettings, setSetting, onSettingsChange, LANGUAGES, DEFAULTS } from '../settings.js';
+import { problems, clearProblems } from '../problems.js';
 import { icons } from '../icons.js';
 import { shell, esc, toast } from './common.js';
 import { backupSizes, createBackup, backupFileName, restoreBackup } from '../backup.js';
@@ -158,6 +159,7 @@ export async function mountSettings(view, _p, nav) {
         ${row('Folio', 'Books stay on this device, unless you keep them in Google Drive (Sync). Translation and read-aloud use online services (Google, Microsoft) and need an internet connection.', '')}
         ${storage ? row('Storage', storage, '') : ''}
         ${row('Reset preferences', '', '<button class="btn subtle" data-act="reset">Reset</button>')}
+        ${problems().length ? row('Problem report', `${problems().length} error${problems().length === 1 ? '' : 's'} recorded on this device. Copy them to send them on; nothing is sent by itself.`, '<button class="btn subtle" data-act="problems">Copy</button>') : ''}
         ${row('Relaunch Folio', `Closes and reopens the app, picking up the newest version if there is one. Version: ${buildLabel()}.`, '<button class="btn subtle" data-act="relaunch">Relaunch</button>')}
       </div>
     </section>`;
@@ -208,6 +210,8 @@ export async function mountSettings(view, _p, nav) {
     const bu = e.target.closest('[data-act="backup"]');
     if (bu) backup(bu, withBooks);
     if (e.target.closest('[data-act="restore"]')) content.querySelector('[data-restore]').click();
+    const pr = e.target.closest('[data-act="problems"]');
+    if (pr) copyProblems(pr);
     const rl = e.target.closest('[data-act="relaunch"]');
     if (rl) relaunch(rl);
     if (e.target.closest('[data-act="reset"]')) {
@@ -304,6 +308,21 @@ export async function deliver({ blob, name }, view, strict = false) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   toast(view, 'Backup saved to Downloads.');
+}
+
+async function copyProblems(button) {
+  const text = [`Folio ${buildLabel()} · ${navigator.userAgent}`, ...problems().map((p) => `${new Date(p.at).toISOString()} ${p.where || '#/'} ${p.msg}`)].join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const t = Object.assign(document.createElement('textarea'), { value: text });
+    document.body.append(t);
+    t.select();
+    document.execCommand('copy');
+    t.remove();
+  }
+  button.textContent = 'Copied';
+  clearProblems();
 }
 
 function buildLabel() {

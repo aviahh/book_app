@@ -27,6 +27,8 @@ const DOUBLE_TAP_MS = 340;
 const MOVE_SLOP = 10;
 // The book open when the app last went to the background (see main.js).
 export const READING_KEY = 'folio.reading.v1';
+// Set while that book is being opened again at start; cleared once it has opened (see main.js).
+export const REOPENING_KEY = 'folio.reopening.v1';
 // Text positions { index, offset } (span, character): order and equality.
 const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
 const same = (p, q) => p.index === q.index && p.offset === q.offset;
@@ -72,6 +74,30 @@ function exitFullscreen() {
 export async function mountReader(root, { id }, nav) {
   // Ask for full screen right away, while the tap that opened the book still counts as a gesture.
   if (getSettings().fullscreen) enterFullscreen();
+  // If opening takes long, say so and offer a way back.
+  const wait = document.createElement('div');
+  wait.className = 'typeset-veil reader-wait';
+  wait.innerHTML = '<div class="tv-card"><div class="spinner"></div><p>Opening the book…</p><a class="btn subtle" href="#/">Back to the Reading Room</a></div>';
+  const slow = setTimeout(() => root.append(wait), 5000);
+  try {
+    const close = await openReader(root, id, nav);
+    // It opened: if the app is closed from here on, it may open this book again at start.
+    const opened = setTimeout(() => {
+      try {
+        localStorage.removeItem(REOPENING_KEY);
+      } catch (e) {}
+    }, 3000);
+    return () => {
+      clearTimeout(opened);
+      if (close) close();
+    };
+  } finally {
+    clearTimeout(slow);
+    wait.remove();
+  }
+}
+
+async function openReader(root, id, nav) {
   let book = await getBook(id);
   if (!book) return nav('#/library');
   const blob = await getBookFile(id);
@@ -2930,7 +2956,7 @@ class Reader {
       clearTimeout(this.popCloseTimer);
       if (this.mode) updateBook(this.book.id, { lastPage: this.#currentPage(), lastOpenedAt: Date.now() });
       try {
-        localStorage.setItem(READING_KEY, JSON.stringify({ id: this.book.id, at: Date.now(), view: this.mode ? this.#viewAnchor() : null }));
+        localStorage.setItem(READING_KEY, JSON.stringify({ v: 2, id: this.book.id, at: Date.now(), view: this.mode ? this.#viewAnchor() : null }));
       } catch (err) {}
       return;
     }
