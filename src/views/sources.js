@@ -13,6 +13,7 @@ import { getText, getBook, NeedsLogin } from '../sources/net.js';
 import { parseFeed, parseOsd, searchUrl, formatOf } from '../sources/opds.js';
 import { listBooks, updateBook } from '../db.js';
 import { importFile } from '../pdf.js';
+import { control, roomFor } from '../sync/downloads.js';
 import '../sources/sources.css';
 
 const pages = new Map(); // feed url → parsed page (so going back is instant)
@@ -268,6 +269,7 @@ async function drawBook(content, view, nav, cat, url, it, isStart) {
   let have = await inLibrary(it.id, it.title);
   let note = '';
   let more = false;
+  let ctl = null; // the download running from this page (to cancel it)
   const draw = () => {
     const main = files[0];
     const busy = files.find((f) => downloading.has(f.href));
@@ -286,7 +288,7 @@ async function drawBook(content, view, nav, cat, url, it, isStart) {
                 have
                   ? `<a class="btn primary" href="#/read/${esc(have.id)}">Open book</a><span class="src-have">${icons.check} In your library</span>`
                   : busy
-                    ? `<div class="src-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(downloading.get(busy.href).fraction * 100)}"><i style="width:${Math.round(downloading.get(busy.href).fraction * 100)}%"></i></div><span class="src-have">Downloading…</span>`
+                    ? `<div class="src-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(downloading.get(busy.href).fraction * 100)}"><i style="width:${Math.round(downloading.get(busy.href).fraction * 100)}%"></i></div><span class="src-have">Downloading…</span><button class="src-link src-cancel" data-src="cancel">Cancel</button>`
                     : `<button class="btn primary" data-get="${esc(main.href)}">Download ${LABEL[main.format]}${main.size ? ` · ${mb(main.size)}` : ''}</button>`
               }
             </div>
@@ -300,12 +302,15 @@ async function drawBook(content, view, nav, cat, url, it, isStart) {
   };
   content.addEventListener('click', async (e) => {
     if (e.target.closest('[data-src="moretext"]')) return (more = true), draw();
+    if (e.target.closest('[data-src="cancel"]')) return ctl && ctl.cancel();
     const g = e.target.closest('[data-get]');
     if (!g) return;
     const f = files.find((x) => x.href === g.dataset.get);
     if (!f || downloading.size) return;
     if (navigator.onLine === false) return toast(view, 'You’re offline. Connect to the internet to download.', 4000);
+    if (!(await roomFor(f.size))) return;
     note = '';
+    ctl = control();
     downloading.set(f.href, { fraction: 0 });
     draw();
     try {
@@ -321,6 +326,7 @@ async function drawBook(content, view, nav, cat, url, it, isStart) {
           }
         },
         f.size,
+        ctl,
       );
       const kind = await sniff(got.blob);
       const format = kind === 'zip' ? (f.format === 'epub' ? 'epub' : 'cbz') : kind || formatOf(got.type, got.url) || f.format;
@@ -333,7 +339,7 @@ async function drawBook(content, view, nav, cat, url, it, isStart) {
       have = book || (await inLibrary(it.id, it.title));
       toast(view, 'Added to your library.');
     } catch (err) {
-      note = navigator.onLine === false ? 'The connection dropped. Please try again.' : String(err.message || 'Download failed.');
+      note = ctl.cancelled ? '' : navigator.onLine === false ? 'The connection dropped. Please try again.' : String(err.message || 'Download failed.');
     } finally {
       downloading.delete(f.href);
     }

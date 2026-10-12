@@ -141,11 +141,13 @@ export function rangeText(spans, a, b) {
  * Returns { text, map } with map[k] = { index, offset } into `spans` (or null
  * for a joining space).
  */
-export function pageText(spans, layerRect) {
+export function pageText(spans, layerRect, { furniture = false } = {}) {
   const chars = [];
   const map = [];
   let prevRect = null;
+  const skip = furniture && layerRect ? furnitureOf(spans, layerRect, furniture === 'marks') : null;
   for (let i = 0; i < spans.length; i++) {
+    if (skip && skip.has(i)) continue;
     const t = spans[i].textContent;
     const rect = spans[i].getBoundingClientRect();
     if (layerRect && /^\s*[\divxlc]{1,4}\s*$/i.test(t)) {
@@ -185,6 +187,94 @@ export function pageText(spans, layerRect) {
     out.pop();
   }
   return { text, map: out };
+}
+
+const WATERMARK = /^[^\s]*\s*[|·•]?\s*(https?:\/\/)?(www\.)?[\w-]+(\.[\w-]+)*\.(com|net|org|io|co|me|info|to|cc|ru|xyz|site|online)(\/\S*)?\s*$/i;
+
+/**
+ * The spans that are the page's furniture rather than its text, so read-aloud
+ * passes over them: running heads and feet (set apart from the body by a gap,
+ * short or in smaller type), footnotes (smaller type below the body), and
+ * site marks or watermarks ("Name | site.com"). A Set of span indexes.
+ */
+export function furnitureOf(spans, layerRect, marksOnly = false) {
+  const H = layerRect.height;
+  const lines = [];
+  spans.forEach((sp, i) => {
+    const t = sp.textContent;
+    if (!t || !t.trim()) return;
+    const r = sp.getBoundingClientRect();
+    if (!r.height) return;
+    const cy = (r.top + r.bottom) / 2 - layerRect.top;
+    let line = null;
+    for (let k = lines.length - 1; k >= 0 && k >= lines.length - 4; k--) {
+      if (Math.abs(lines[k].cy - cy) < Math.max(lines[k].h, r.height) * 0.5) {
+        line = lines[k];
+        break;
+      }
+    }
+    if (!line) lines.push((line = { idx: [], cy, top: r.top - layerRect.top, h: r.height, hs: [], text: '' }));
+    line.idx.push(i);
+    line.hs.push(r.height);
+    line.text += t;
+    line.top = Math.min(line.top, r.top - layerRect.top);
+  });
+  const out = new Set();
+  if (!lines.length) return out;
+  for (const l of lines) {
+    l.hs.sort((a, b) => a - b);
+    l.h = l.hs[l.hs.length >> 1];
+    l.chars = l.text.trim().length;
+  }
+  lines.sort((a, b) => a.top - b.top);
+  // The body's type size: the size most of the page's characters are in.
+  const bySize = lines.slice().sort((a, b) => a.h - b.h);
+  const total = lines.reduce((n, l) => n + l.chars, 0);
+  let acc = 0;
+  let bodyH = bySize[0].h;
+  for (const l of bySize) {
+    acc += l.chars;
+    if (acc >= total / 2) {
+      bodyH = l.h;
+      break;
+    }
+  }
+  const body = lines.filter((l) => l.h > bodyH * 0.85 && l.h < bodyH * 1.2);
+  const steps = [];
+  for (let k = 1; k < body.length; k++) {
+    const d = body[k].top - body[k - 1].top;
+    if (d > bodyH * 0.5) steps.push(d);
+  }
+  steps.sort((a, b) => a - b);
+  const step = steps.length ? steps[steps.length >> 1] : bodyH * 1.4;
+  const small = (l) => l.h < bodyH * 0.86;
+  const brief = (l) => l.chars < 80;
+  const mark = (l) => l.idx.forEach((i) => out.add(i));
+
+  // Watermarks and site marks, wherever they are.
+  for (const l of lines) if (l.chars < 70 && WATERMARK.test(l.text.trim())) mark(l);
+  // (EPUB pages are Folio's own: no running heads or page numbers in their text, only marks the book itself carries.)
+  if (marksOnly || body.length < 3) return out; // too little text to tell the body from the rest
+
+  // Foot of the page: page numbers, running feet, site marks, footnotes.
+  for (let k = lines.length - 1; k > 0; k--) {
+    const l = lines[k];
+    const inFoot = l.top > H * 0.82 && (brief(l) || small(l));
+    const note = small(l) && l.top > H * 0.5;
+    if (!inFoot && !note) break;
+    if (l.top - lines[k - 1].top > step * 1.6) {
+      for (let j = k; j < lines.length; j++) mark(lines[j]);
+    }
+  }
+  // Head of the page: running titles, chapter names, page numbers.
+  for (let k = 0; k < lines.length - 1; k++) {
+    const l = lines[k];
+    if (!(l.top < H * 0.14 && (brief(l) || small(l)))) break;
+    if (lines[k + 1].top - l.top > step * 1.6) {
+      for (let j = 0; j <= k; j++) mark(lines[j]);
+    }
+  }
+  return out;
 }
 
 /**

@@ -2830,7 +2830,7 @@ class Reader {
     const layer = root.querySelector(`.slot .page[data-page="${n}"] .textLayer`);
     const spans = layer ? collectSpans([layer]) : [];
     if (!spans.length) return null;
-    return { spans, ...pageText(spans, layer.getBoundingClientRect()) };
+    return { spans, ...pageText(spans, layer.getBoundingClientRect(), { furniture: this.kind === 'epub' ? 'marks' : true }) };
   }
 
   /** The text of page n, read from a hidden text layer (pages not on screen yet). */
@@ -2851,7 +2851,7 @@ class Reader {
       this.el.append(box);
       try {
         await buildTextLayer(page, tl, this.pw);
-        text = pageText(collectSpans([tl]), tl.getBoundingClientRect()).text;
+        text = pageText(collectSpans([tl]), tl.getBoundingClientRect(), { furniture: this.kind === 'epub' ? 'marks' : true }).text;
       } catch (e) {
         text = '';
       } finally {

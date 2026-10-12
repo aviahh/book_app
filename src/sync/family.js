@@ -70,7 +70,7 @@ export const leaveFamily = (owner) => post('family/remove', { owner }, token()).
 export const ownerName = (email) => (email || 'Family').split('@')[0];
 
 /** Download a book from a family library into this device's library. Returns the local book. */
-export async function downloadFamilyBook(owner, book, onProgress = () => {}) {
+export async function downloadFamilyBook(owner, book, onProgress = () => {}, ctl = null) {
   markFamily(book.sid);
   const blob = await new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
@@ -93,6 +93,8 @@ export async function downloadFamilyBook(owner, book, onProgress = () => {}) {
       r.readAsText(x.response);
     };
     x.onerror = () => reject(new Error('Download failed. Check the connection.'));
+    x.onabort = () => reject(new Error('cancelled'));
+    if (ctl) ctl.onCancel(() => x.abort());
     x.send();
   });
   const meta = book.meta || {};

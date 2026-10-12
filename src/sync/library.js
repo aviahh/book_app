@@ -2,6 +2,7 @@
 import './sync.css';
 import { cloudBooks, driveCopy } from './engine.js';
 import { driveOn, downloadBook, removeDownload, removeCloudBook } from './drive.js';
+import { withProgress } from './downloads.js';
 import { familyList, familyCached, ownerName, downloadFamilyBook } from './family.js';
 import { listBooks } from '../db.js';
 import { status } from './index.js';
@@ -106,20 +107,10 @@ export async function inDrive(books) {
 
 /** Download a cloud book (with a quiet progress card), then open it. */
 export async function openCloudBook(view, book, nav) {
-  const el = document.createElement('div');
-  el.className = 'import-overlay';
-  el.innerHTML = `<div class="import-card"><div class="spinner"></div><p class="import-title">Downloading from Google Drive</p><p class="import-name"></p><div class="sync-bar"><i></i></div></div>`;
-  el.querySelector('.import-name').textContent = `${book.title}${book.size ? ' · ' + mb(book.size) : ''}`;
-  view.append(el);
-  try {
-    const local = await downloadBook(book.syncId, (f) => (el.querySelector('.sync-bar i').style.width = `${Math.round(f * 100)}%`));
-    el.remove();
-    if (local) nav(`#/read/${local.id}`);
-    return local;
-  } catch (e) {
-    el.remove();
-    throw e;
-  }
+  const got = await withProgress({ title: book.title, from: 'Google Drive', size: book.size }, (onProgress, ctl) => downloadBook(book.syncId, onProgress, ctl));
+  if (!got) return null; // cancelled
+  if (got.book && !got.hidden) nav(`#/read/${got.book.id}`);
+  return got.book;
 }
 
 /**
@@ -167,8 +158,8 @@ export function cloudMenu(book, hasCopy, icons) {
 /** Handle a Drive-related menu choice. Returns a message to show, or null if it wasn't one. */
 export async function cloudMenuAction(m, book, view, nav) {
   if (m === 'download') {
-    await openCloudBook(view, book, () => {});
-    return 'Downloaded · ready offline';
+    const got = await openCloudBook(view, book, () => {});
+    return got ? 'Downloaded · ready offline' : '';
   }
   if (m === 'undownload') {
     if (!confirm(`Remove the download of “${book.title}” from this device? It stays in your library and in Google Drive, with your progress; download it again any time.`)) return '';
@@ -262,17 +253,11 @@ export async function mountFamilyPage(content, owner, view, nav, toast) {
     if (!card || !lib) return;
     e.preventDefault();
     const b = lib.books.find((x) => x.sid === card.dataset.sid);
-    const el = document.createElement('div');
-    el.className = 'import-overlay';
-    el.innerHTML = `<div class="import-card"><div class="spinner"></div><p class="import-title">Downloading from ${escHtml(ownerName(lib.email))}’s library</p><p class="import-name"></p><div class="sync-bar"><i></i></div></div>`;
-    el.querySelector('.import-name').textContent = b.meta.title;
-    view.append(el);
     try {
-      const book = await downloadFamilyBook(owner, b, (f) => (el.querySelector('.sync-bar i').style.width = `${Math.round(f * 100)}%`));
-      el.remove();
-      if (book) nav(`#/read/${book.id}`);
+      const size = (b.drive && b.drive.size) || (b.meta && b.meta.size) || 0;
+      const got = await withProgress({ title: b.meta.title, from: `${ownerName(lib.email)}’s library`, size }, (onProgress, ctl) => downloadFamilyBook(owner, b, onProgress, ctl));
+      if (got && got.book && !got.hidden) nav(`#/read/${got.book.id}`);
     } catch (err) {
-      el.remove();
       toast(view, err.message || 'Download failed', 4000);
     }
   });

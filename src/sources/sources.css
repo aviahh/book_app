@@ -339,3 +339,4 @@
   color: var(--accent);
   text-decoration: underline;
 }
+.src-cancel { margin-left: 12px; font-size: 0.9rem; }

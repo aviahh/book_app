@@ -51,7 +51,7 @@ export async function getText(url, login) {
   return { text: await res.text(), url: res.headers.get('X-Folio-Url') || url };
 }
 
-function xhr(url, headers, onProgress, hint = 0) {
+function xhr(url, headers, onProgress, hint = 0, ctl = null) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
     x.open('GET', url);
@@ -63,26 +63,29 @@ function xhr(url, headers, onProgress, hint = 0) {
     };
     x.onload = () => resolve(x);
     x.onerror = () => reject(new TypeError('network'));
+    x.onabort = () => reject(new Error('cancelled'));
+    if (ctl) ctl.onCancel(() => x.abort());
     x.send();
   });
 }
 
 /** A book file: { blob, type, url }. onProgress(fraction, bytes). */
-export async function getBook(url, login, onProgress = () => {}, sizeHint = 0) {
+export async function getBook(url, login, onProgress = () => {}, sizeHint = 0, ctl = null) {
   const auth = authTo(url, login);
   if (!viaRelay('book', url)) {
     try {
-      const x = await xhr(url, auth ? { Authorization: auth } : {}, onProgress, sizeHint);
+      const x = await xhr(url, auth ? { Authorization: auth } : {}, onProgress, sizeHint, ctl);
       if (x.status === 401) throw new NeedsLogin('This catalog needs a login.');
       if (x.status === 200) return { blob: x.response, type: x.getResponseHeader('Content-Type') || '', url: x.responseURL || url };
       if (x.status !== 0) throw new Error(`Download failed (${x.status}).`);
     } catch (e) {
       if (!(e instanceof TypeError)) throw e;
+      if (ctl && ctl.cancelled) throw new Error('cancelled');
     }
     relayed.add(`book:${originOf(url)}`);
   }
-  const x = await xhr(api(`fetch?url=${encodeURIComponent(url)}`), relayHeaders(url, login), onProgress, sizeHint).catch(() => {
-    throw new Error('Download failed. Check the connection.');
+  const x = await xhr(api(`fetch?url=${encodeURIComponent(url)}`), relayHeaders(url, login), onProgress, sizeHint, ctl).catch((e) => {
+    throw new Error(ctl && ctl.cancelled ? 'cancelled' : 'Download failed. Check the connection.');
   });
   if (x.status !== 200) {
     const text = await new Response(x.response).text().catch(() => '');

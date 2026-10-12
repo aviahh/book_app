@@ -107,6 +107,20 @@ a {
   text-decoration: none;
 }
 
+/* The app's own screens aren't text to select: a tap on a heading or a label
+   must not select a word (and so call up Chrome's "Touch to Search" bar). */
+.shell {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.shell input,
+.shell textarea,
+.shell [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

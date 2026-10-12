@@ -333,7 +333,7 @@ export async function syncFolder({ force = false, confirmAfter = CONFIRM_AFTER }
 // ---------------------------------------------------------------- downloading
 
 /** Download a book from Drive into the library here. onProgress(fraction). Returns the local book. */
-export async function downloadBook(sid, onProgress = () => {}) {
+export async function downloadBook(sid, onProgress = () => {}, ctl = null) {
   const copy = await driveCopy(sid);
   if (!copy) throw new Error('This book isn’t in Google Drive.');
   const blob = await new Promise((resolve, reject) => {
@@ -346,6 +346,8 @@ export async function downloadBook(sid, onProgress = () => {}) {
       x.onprogress = (e) => onProgress(e.lengthComputable ? e.loaded / e.total : copy.size ? Math.min(0.99, e.loaded / copy.size) : 0);
       x.onload = () => (x.status === 200 ? resolve(x.response) : reject(new Error(x.status === 404 ? 'This book is no longer in Google Drive.' : 'Download failed (' + x.status + ')')));
       x.onerror = () => reject(new Error('Download failed. Check the connection.'));
+      x.onabort = () => reject(new Error('cancelled'));
+      if (ctl) ctl.onCancel(() => x.abort());
       x.send();
     }, reject);
   });

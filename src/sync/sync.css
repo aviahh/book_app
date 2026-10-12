@@ -177,3 +177,60 @@
   margin: 28px 0 8px;
   text-align: center;
 }
+
+/* A download in progress: the card's buttons, and the pill it shrinks to */
+.dl-pct {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+.dl-btns {
+  display: flex;
+  margin-top: 16px;
+}
+.dl-btns .btn + .btn {
+  margin-left: 10px;
+}
+.dl-pill {
+  position: fixed;
+  z-index: 70;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 11px 16px 13px;
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  font-size: 0.88rem;
+}
+.dl-pill-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 560;
+}
+.dl-pill-pct {
+  flex: none;
+  margin-left: 12px;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.dl-pill-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+.dl-pill.done .dl-pill-pct::before {
+  content: '✓ ';
+}
