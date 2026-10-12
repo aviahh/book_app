@@ -13,6 +13,7 @@ import { mountHome } from './views/home.js';
 import { mountLibrary } from './views/library.js';
 import { mountSettings } from './views/settings.js';
 import { mountAccount } from './views/account.js';
+import { mountSources } from './views/sources.js';
 import { mountReader } from './reader/reader.js';
 import { requestPersistence } from './db.js';
 import { getSettings, onSettingsChange } from './settings.js';
@@ -37,6 +38,7 @@ let token = 0;
 
 const routes = [
   [/^#\/read\/([\w-]+)/, (m) => [mountReader, { id: m[1] }]],
+  [/^#\/sources/, () => [mountSources, {}]],
   [/^#\/library/, () => [mountLibrary, {}]],
   [/^#\/settings/, () => [mountSettings, {}]],
   [/^#\/account/, () => [mountAccount, {}]],

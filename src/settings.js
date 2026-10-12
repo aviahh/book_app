@@ -29,6 +29,7 @@ export const DEFAULTS = {
   epubFont: 'literata', // 'literata' | 'sans' | 'georgia'
   epubSize: 100, // text size, % of this device's normal
   epubSpacing: 'normal', // line spacing: 'compact' | 'normal' | 'relaxed'
+  sources: [], // book catalogs you added (OPDS): [{ id, name, url }]; their logins stay on the device
 };
 
 let current = load();

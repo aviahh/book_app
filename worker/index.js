@@ -7,10 +7,11 @@
 // and this Worker opens the service's WebSocket, forwards the request, and
 // streams the MP3 back as it arrives — playback starts within a moment.
 //
-// Sync (accounts and reading data) lives in sync.js.
+// Sync (accounts and reading data) lives in sync.js; the relay for book catalogs in fetch.js.
 // Everything else is served straight from the static app (see wrangler.jsonc).
 
 import { handleSync } from './sync.js';
+import { handleFetch } from './fetch.js';
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 const CHROMIUM_FULL_VERSION = '143.0.3650.75';
@@ -151,6 +152,8 @@ export default {
     const url = new URL(request.url);
     const synced = await handleSync(request, env);
     if (synced) return synced;
+    const fetched = await handleFetch(request, env);
+    if (fetched) return fetched;
     if (url.pathname !== '/api/tts') return new Response('Not found', { status: 404 });
     // Only serve the app itself, not other websites.
     const site = request.headers.get('Sec-Fetch-Site');

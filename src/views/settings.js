@@ -211,7 +211,7 @@ export async function mountSettings(view, _p, nav) {
     const rl = e.target.closest('[data-act="relaunch"]');
     if (rl) relaunch(rl);
     if (e.target.closest('[data-act="reset"]')) {
-      for (const [k, v] of Object.entries(DEFAULTS)) setSetting(k, v);
+      for (const [k, v] of Object.entries(DEFAULTS)) if (k !== 'sources') setSetting(k, v); // your catalogs aren't a preference
       mountSettings((view.replaceChildren(), view), _p, nav);
     }
   });

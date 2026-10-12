@@ -58,6 +58,7 @@ export async function mountLibrary(view, _params, nav) {
             .map((k) => `<button role="radio" data-sort="${k}" aria-checked="${k === sort}">${k[0].toUpperCase() + k.slice(1)}</button>`)
             .join('')}
         </div>
+        <a class="btn subtle" href="#/sources">${icons.search} Find books</a>
         <button class="btn primary" data-act="add">${icons.plus} Add books</button>
       </div>
     </section>
@@ -142,6 +143,7 @@ export async function mountLibrary(view, _params, nav) {
           <h2>No books yet</h2>
           <p>Tap <b>Add books</b> to choose PDF, EPUB or comic (CBZ, CBR) books from this device — from Files, iCloud Drive, Downloads or any folder you can browse.</p>
           <button class="btn primary" data-act="add">${icons.plus} Add books</button>
+          <p class="lib-empty-alt">or <a href="#/sources">find free books</a> in open catalogs</p>
         </div>`;
       return;
     }
