@@ -3148,77 +3148,134 @@ class Reader {
     // The page's text layer may still be building after a turn.
     for (let t = 0; t < 30 && token === this.pieceToken && !this.#shownPageText(n); t++) await new Promise((res) => setTimeout(res, 100));
     if (token !== this.pieceToken || !this.speech.active) return;
-    const rects = [];
-    const parts = [];
-    for (const part of seg.parts) {
-      const shown = this.#shownPageText(part.page);
-      if (!shown) continue;
-      let s = part.s;
-      let e = part.e;
-      const want = r.texts.get(part.page);
-      // Locate the sentence again if this page's text came out differently.
-      if (want != null && shown.text !== want) {
-        const at = shown.text.indexOf(want.slice(s, e));
-        if (at < 0) continue;
-        e = at + (e - s);
-        s = at;
-      }
-      let a = s;
-      while (a < e && !shown.map[a]) a++;
-      let b = e - 1;
-      while (b > a && !shown.map[b]) b--;
-      if (a >= e || !shown.map[b]) continue;
-      const end = { index: shown.map[b].index, offset: shown.map[b].offset + 1 };
-      rects.push(...rangeRects(shown.spans, shown.map[a], end));
-      parts.push({ shown, a, b });
-    }
-    if (!rects.length) return;
-    this.#drawHighlights(rects, 'speak');
-    this.cursor = { piece: i, parts };
+    this.cursor = { piece: i, seg, page: n, lineTop: null };
+    const rects = this.#markPiece();
     if (this.camera.s > 1.02) this.#followVoice(true);
-    else this.#keepInView(rects);
+    else if (rects.length) this.#keepInView(rects);
+  }
+
+  /** Where a part of the sentence being read is in its page's text as shown now: { shown, a, b }, or null. */
+  #locatePart(part) {
+    const shown = this.#shownPageText(part.page);
+    if (!shown) return null;
+    let s = part.s;
+    let e = part.e;
+    const want = this.aloud && this.aloud.texts.get(part.page);
+    // Locate the sentence again if this page's text came out differently.
+    if (want != null && shown.text !== want) {
+      const at = shown.text.indexOf(want.slice(s, e));
+      if (at < 0) return null;
+      e = at + (e - s);
+      s = at;
+    }
+    let a = s;
+    while (a < e && !shown.map[a]) a++;
+    let b = e - 1;
+    while (b > a && !shown.map[b]) b--;
+    if (a >= e || !shown.map[b]) return null;
+    return { shown, a, b };
+  }
+
+  /** Mark the parts of the sentence being read that are on screen. Returns their rectangles. */
+  #markPiece() {
+    const c = this.cursor;
+    if (!c) return [];
+    const rects = [];
+    for (const part of c.seg.parts) {
+      const at = this.#locatePart(part);
+      if (!at) continue;
+      const end = { index: at.shown.map[at.b].index, offset: at.shown.map[at.b].offset + 1 };
+      rects.push(...rangeRects(at.shown.spans, at.shown.map[at.a], end));
+    }
+    if (rects.length) this.#drawHighlights(rects, 'speak');
+    return rects;
   }
 
   /**
-   * Zoomed in, reading aloud: the words being read now (estimated from how far
-   * into the sentence the voice is) and the next few stay on screen. The view
-   * moves sideways along the line, and back to the start of the next one.
-   * After you move the view yourself it waits a moment before following again.
+   * Following the voice within a sentence, several times a second (where it is
+   * is estimated from how far into the sentence's audio it has got):
+   *  - when it reaches the next page mid-sentence, that page is turned to (or
+   *    scrolled to) right away, and the rest of the sentence marked there;
+   *  - zoomed in, the view glides along the line with the voice, keeping its
+   *    place a little left of the middle so the words that come next are in
+   *    view; a new line is moved to quickly;
+   *  - the line being read is kept away from the top and bottom edges.
+   * After you move the view yourself it waits a moment before moving it again.
    */
-  #followVoice(start = false) {
+  async #followVoice(start = false) {
     const c = this.cursor;
     const cam = this.camera;
-    if (!c || !c.parts.length || cam.s <= 1.02 || document.hidden) return;
-    if (!start && performance.now() - (this.userMovedAt || 0) < 4000) return;
+    if (!c || document.hidden || this.busy || c.turning) return;
+    if (!start && performance.now() < (c.holdUntil || 0)) return; // a quick move (new line, page) is still under way
     const frac = start ? 0 : this.speech.progress();
     if (frac == null) return;
-    const total = c.parts.reduce((n, p) => n + (p.b - p.a + 1), 0);
+    const parts = c.seg.parts;
+    const total = parts.reduce((n, p) => n + Math.max(1, p.e - p.s), 0);
     let at = Math.floor(frac * total);
-    let part = c.parts[0];
-    for (const p of c.parts) {
+    let part = parts[0];
+    for (const p of parts) {
       part = p;
-      if (at <= p.b - p.a) break;
-      at -= p.b - p.a + 1;
+      const len = Math.max(1, p.e - p.s);
+      if (at < len) break;
+      at -= len;
     }
-    const { shown } = part;
-    let k = Math.min(part.b, part.a + at);
-    while (k < part.b && !shown.map[k]) k++;
-    let j = Math.min(part.b, k + 14); // a little of what comes next
-    while (j > k && !shown.map[j]) j--;
-    if (!shown.map[k] || !shown.map[j]) return;
-    const rects = rangeRects(shown.spans, shown.map[k], { index: shown.map[j].index, offset: shown.map[j].offset + 1 });
-    if (!rects.length) return;
-    const r = rects[0];
-    const last = rects[rects.length - 1].top === r.top ? rects[rects.length - 1] : r; // the same line only
+    if (part.page !== c.page) {
+      // Onto the next page in the middle of the sentence: show it now.
+      c.page = part.page;
+      c.lineTop = null;
+      c.turning = true;
+      try {
+        if (this.mode === 'double') {
+          if (!visiblePages(spreadPages('double', this.spread, this.total)).includes(part.page)) await this.go(spreadOf('double', part.page));
+        } else if (!this.#pageInView(part.page)) {
+          await this.#scrollToPage(part.page);
+        }
+        for (let t = 0; t < 20 && this.cursor === c && !this.#shownPageText(part.page); t++) await new Promise((res) => setTimeout(res, 100));
+      } finally {
+        c.turning = false;
+      }
+      if (this.cursor !== c) return;
+      this.#markPiece();
+      start = true;
+    }
+    const zoomed = cam.s > 1.02;
+    if (!zoomed && this.mode !== 'single') return; // a whole spread is in view
+    if (!start && performance.now() - (this.userMovedAt || 0) < 4000) return;
+    const loc = this.#locatePart(part);
+    if (!loc) return;
+    const { shown } = loc;
+    let k = Math.min(loc.b, loc.a + at);
+    while (k < loc.b && !shown.map[k]) k++;
+    if (!shown.map[k]) return;
+    const kr = rangeRects(shown.spans, shown.map[k], { index: shown.map[k].index, offset: shown.map[k].offset + 1 });
+    if (!kr.length) return;
+    const r = kr[0];
     const box = this.el.getBoundingClientRect();
+    const newLine = c.lineTop == null || Math.abs(r.top - c.lineTop) > r.height * 0.6;
+    c.lineTop = r.top;
     let dx = 0;
     let dy = 0;
-    if (last.right > box.right - this.W * 0.1) dx = box.left + this.W * 0.22 - r.left; // running off the right: bring it to the left part
-    else if (r.left < box.left + this.W * 0.04) dx = box.left + this.W * 0.08 - r.left; // a new line began off to the left
-    if (r.top < box.top + this.H * 0.1 || r.bottom > box.bottom - this.H * 0.15) dy = box.top + this.H * 0.35 - r.top;
+    let quick = false;
+    if (zoomed) {
+      const place = box.left + this.W * 0.38;
+      if (newLine) {
+        // A new line (or sentence): if its start is out of sight, there at once.
+        if (r.left < box.left + this.W * 0.05 || r.right > box.right - this.W * 0.05) (dx = box.left + this.W * 0.1 - r.left), (quick = true);
+      } else if (r.right > box.right - this.W * 0.1 || r.left < box.left) {
+        // The voice got ahead of the view (a fast voice): catch up now.
+        dx = place - r.left;
+        quick = true;
+      } else if (r.left > place) {
+        // Along the line: small steps, as fast as the voice goes, its place staying a little left of the middle.
+        dx = (place - r.left) * 0.6;
+      }
+    }
+    if (r.top < box.top + this.H * 0.1 || r.bottom > box.bottom - this.H * 0.15) (dy = box.top + this.H * 0.35 - r.top), (quick = true);
     if (this.rtl) dx = -dx;
-    if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
-    cam.animateTo(cam.s, cam.tx + dx, cam.ty + dy, start ? 260 : 340);
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 2) return;
+    const ms = quick ? 260 : 150;
+    if (quick) c.holdUntil = performance.now() + ms;
+    cam.animateTo(cam.s, cam.tx + dx, cam.ty + dy, ms);
   }
 
   /** Is any of page n on screen now (one-page scroll)? */
@@ -3277,7 +3334,7 @@ class Reader {
     }
     this.speechWasActive = true;
     this.#keepAwake(true);
-    if (!this.followTimer) this.followTimer = setInterval(() => this.#followVoice(), 300);
+    if (!this.followTimer) this.followTimer = setInterval(() => this.#followVoice(), 140);
     bar.hidden = false;
     bar.dataset.state = state;
     btn.innerHTML = state === 'paused' ? icons.play : icons.pause;
