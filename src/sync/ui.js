@@ -1,6 +1,6 @@
 // The Sync section in Settings: one quiet group of rows.
 import './sync.css';
-import { status, onSyncStatus, runSync, signInWithGoogle, linkWithCode, makeLinkCode, signOut, takeSigninError, takeDriveNote } from './index.js';
+import { status, onSyncStatus, runSync, signInWithGoogle, linkWithCode, makeLinkCode, signOut, takeSigninError, takeDriveNote, finishJoining } from './index.js';
 import { connectDrive, disconnectDrive, driveSummary, onDriveProgress } from './drive.js';
 import { familyList, familyCached, shareCode, joinFamily, stopSharingWith, leaveFamily, ownerName } from './family.js';
 
@@ -50,7 +50,17 @@ export function mountSyncSettings(group) {
   function draw() {
     const st = status();
     let html = '';
-    if (st.signingIn) {
+    if (st.joining) {
+      const j = st.joining;
+      html = `
+        <div class="sync-join">
+          <p class="sj-title">Signed in as ${esc(j.email)}</p>
+          <p class="sj-desc">This device has ${j.here} book${j.here === 1 ? '' : 's'} of its own, and your account already has ${j.account}. How should this device join?</p>
+          <button class="rm-choice" data-join="combine"><b>Combine (recommended)</b><span>Keep everything from both. Books from each side appear everywhere; where both read the same book, the most recent reading wins. Nothing is lost.</span></button>
+          <button class="rm-choice" data-join="account"><b>Use my account’s library</b><span>This device takes your account’s books, places and settings. Books only on this device are removed from it; nothing in your Drive is touched.</span></button>
+          <button class="btn subtle" data-join="cancel">Cancel sign-in</button>
+        </div>`;
+    } else if (st.signingIn) {
       html = row('Signing in…', '', '<span class="sync-spin" aria-hidden="true"></span>');
     } else if (!st.signedIn) {
       const title = st.expired ? 'Signed out on this device' : 'Sync across your devices';
@@ -130,6 +140,12 @@ export function mountSyncSettings(group) {
   }
 
   group.addEventListener('click', async (e) => {
+    const j = e.target.closest('[data-join]');
+    if (j) {
+      for (const x of group.querySelectorAll('[data-join]')) x.disabled = true;
+      await finishJoining(j.dataset.join);
+      return draw();
+    }
     const b = e.target.closest('[data-sync]');
     if (!b) return;
     const act = b.dataset.sync;

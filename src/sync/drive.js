@@ -16,7 +16,7 @@
 
 import { listBooks, getBookFile, removeBook } from '../db.js';
 import { importFile } from '../pdf.js';
-import { account, post, noteDrive, driveCopy, driveCopies, cloudBooks, onRemovedEverywhere, removeEverywhere, itemOf, noteFolderBook } from './engine.js';
+import { account, post, noteDrive, driveCopy, driveCopies, cloudBooks, onRemovedEverywhere, removeEverywhere, itemOf, noteFolderBook, noteValue } from './engine.js';
 import { isFamilyBook } from './family.js';
 import { fileKind, contentIdOf, CHUNK } from './items.js';
 
@@ -46,17 +46,31 @@ async function drive(path, opts = {}, retried) {
 const q = (s) => encodeURIComponent(s);
 
 /** The "Folio" folder (made the first time). */
-async function folder() {
-  let id = '';
-  try {
-    id = (JSON.parse(localStorage.getItem(FOLDER_KEY) || '{}') || {}).folder || '';
-  } catch (e) {}
+/**
+ * The library folder. The account remembers which one it is (item
+ * "d:folder"), so every device uses the same folder; a device never decides
+ * on its own by searching (Drive's search can miss a folder made moments
+ * ago on another device, which would give a second "Folio" folder).
+ * Only when the account has none yet: the oldest "Folio" at the top of My
+ * Drive (one you made yourself, say), else a new one.
+ */
+let folderLookup = null;
+function folder() {
+  // One lookup at a time: two parts of the app asking at once must not make two folders.
+  if (!folderLookup) folderLookup = findFolder().finally(() => (folderLookup = null));
+  return folderLookup;
+}
+
+async function findFolder() {
+  const known = await itemOf('d:folder');
+  let id = known && !known.d && known.v && known.v.id;
   if (id) {
     try {
-      const r = await (await drive(`/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed`)).json();
-      if (!r.trashed) return id;
-    } catch (e) {}
-    id = '';
+      const r = await drive(`/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed`);
+      if (!(await r.json()).trashed) return id;
+    } catch (e) {
+      if (!/HTTP 404/.test(String(e && e.message))) throw e; // not sure it's gone: don't replace it
+    }
   }
   const found = await (await drive(`/drive/v3/files?q=${q(`name='Folio' and mimeType='${FOLDER_MIME}' and 'root' in parents and trashed=false`)}&fields=files(id,createdTime)&orderBy=createdTime`)).json();
   if (found.files && found.files.length) id = found.files[0].id;
@@ -64,10 +78,17 @@ async function folder() {
     const made = await (await drive('/drive/v3/files?fields=id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Folio', mimeType: FOLDER_MIME }) })).json();
     id = made.id;
   }
+  await noteValue('d:folder', { id });
   try {
-    localStorage.setItem(FOLDER_KEY, JSON.stringify({ folder: id }));
+    localStorage.removeItem(FOLDER_KEY);
   } catch (e) {}
   return id;
+}
+
+/** Every "Folio" folder at the top of My Drive (normally one; two if devices ever made one each): all count as the library. */
+async function folioFolders() {
+  const found = await (await drive(`/drive/v3/files?q=${q(`name='Folio' and mimeType='${FOLDER_MIME}' and 'root' in parents and trashed=false`)}&fields=files(id)`)).json();
+  return (found.files || []).map((f) => f.id);
 }
 
 /** A copy of this book already in Drive (put there from another device), if any. */
@@ -156,6 +177,8 @@ export async function driveSummary() {
 
 const CHECKED_KEY = 'folio.drive.checked.v1';
 const CHECK_EVERY = 60 * 1000;
+const MISSING_KEY = 'folio.drive.missing.v1';
+const CONFIRM_AFTER = 4 * 60 * 1000; // a file must still be missing this much later before its book leaves
 const BOOK_FILE = /\.(pdf|epub|cbz|cbr)$/i;
 const MAX_FOLDERS = 300;
 
@@ -178,8 +201,9 @@ async function children(folderId) {
 /** Every book file in the Folio folder and the folders inside it: { files, folders }. */
 async function scanFolder() {
   const root = await folder();
-  const folders = new Set([root]);
-  const queue = [root];
+  const tops = [root].concat((await folioFolders()).filter((id) => id !== root));
+  const folders = new Set(tops);
+  const queue = tops.slice();
   const files = [];
   while (queue.length) {
     for (const f of await children(queue.shift())) {
@@ -236,7 +260,7 @@ const trash = (id) => drive(`/drive/v3/files/${encodeURIComponent(id)}`, { metho
  * a failed or partial answer from Drive never empties the library.
  * Returns how many books came or went.
  */
-export async function syncFolder({ force = false } = {}) {
+export async function syncFolder({ force = false, confirmAfter = CONFIRM_AFTER } = {}) {
   if (!driveOn() || navigator.onLine === false) return 0;
   let last = 0;
   try {
@@ -257,20 +281,27 @@ export async function syncFolder({ force = false } = {}) {
     const copy = await driveCopy(sid);
     // The same book twice in the folder: the first one found stands for it.
     if (copy && copy.id !== f.id && alive.has(copy.id)) continue;
+    // Removed from the library in Folio a moment ago, its file on its way to the trash: leave it be.
+    // (Otherwise a book file in the folder is in the library, also one that had been removed.)
     const meta = await itemOf(`b:${sid}:meta`);
-    if (meta && meta.d && (Date.parse(f.createdTime) || 0) <= meta.t) {
-      // Removed from the library from inside Folio; its file just hasn't reached the trash yet.
-      if (!copy || copy.id === f.id) trash(f.id).catch(() => {});
-      continue;
-    }
+    if (meta && meta.d && copy && copy.id === f.id) continue;
     await noteFolderBook(sid, metaOf(f), { id: f.id, size: +f.size, name: f.name });
     knownIds.add(f.id);
     changes++;
   }
 
-  // Files that left the folder.
+  // Files that left the folder. Only after they were missing in two checks a few
+  // minutes apart (Drive's lists can lag behind), and each confirmed on its own.
+  let missing = {};
+  try {
+    missing = JSON.parse(localStorage.getItem(MISSING_KEY) || '{}') || {};
+  } catch (e) {}
+  const stillMissing = {};
   for (const { sid, copy } of known) {
     if (alive.has(copy.id)) continue;
+    const since = missing[copy.id] || Date.now();
+    stillMissing[copy.id] = since;
+    if (Date.now() - since < confirmAfter) continue;
     let gone = false;
     try {
       const r = await fetch(`${API}/drive/v3/files/${encodeURIComponent(copy.id)}?fields=id,trashed,parents`, { headers: { Authorization: 'Bearer ' + (await accessToken()) } });
@@ -280,7 +311,11 @@ export async function syncFolder({ force = false } = {}) {
         gone = f.trashed === true || !(f.parents || []).some((p) => folders.has(p));
       }
     } catch (e) {}
-    if (!gone) continue;
+    if (!gone) {
+      delete stillMissing[copy.id];
+      continue;
+    }
+    delete stillMissing[copy.id];
     // Off this device, and (by the tombstone) off every other one.
     await noteDrive(sid, null);
     const here = (await listBooks()).filter((b) => b.syncId === sid);
@@ -290,6 +325,7 @@ export async function syncFolder({ force = false } = {}) {
   }
   try {
     localStorage.setItem(CHECKED_KEY, String(Date.now()));
+    localStorage.setItem(MISSING_KEY, JSON.stringify(stillMissing));
   } catch (e) {}
   return changes;
 }

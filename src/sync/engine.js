@@ -159,7 +159,7 @@ async function scanBook(book, { seeded = false, added = false } = {}) {
       if (r) out.push(r);
       continue;
     }
-    if (cur && !cur.dirty && (seeded || added) && !sameValue(it.k, cur.v, it.v) && cur.t >= it.seed) {
+    if (cur && !cur.dirty && (seeded || added) && !sameValue(it.k, cur.v, it.v) && (cur.t >= it.seed || preferAccount())) {
       // The server knows something newer than what this copy of the book recorded.
       remote[it.k] = cur;
       continue;
@@ -381,6 +381,16 @@ export async function noteDrive(sid, v) {
   }
 }
 
+/** Record an account-wide value (e.g. which Drive folder is the library) and send it. */
+export async function noteValue(k, v) {
+  await ready();
+  const r = note(k, v);
+  if (r) {
+    await saveItems([r]);
+    changed();
+  }
+}
+
 /** One item as sync knows it ({ k, v, t, d }), or null. */
 export async function itemOf(k) {
   await ready();
@@ -542,7 +552,32 @@ async function exchange(a, dirty, dev) {
 // ---------------------------------------------------------------- account
 
 /** Signed in: remember the account; everything here will be offered on the first sync. */
-export async function setAccount(token, email) {
+/** Signing in chose "use the account's library": on the first sync, what the account knows wins over this device. */
+const preferAccount = () => {
+  const a = account();
+  return !!(a && a.preferAccount && !a.lastSync);
+};
+
+/**
+ * What the account already holds, without taking any of it in yet (to ask
+ * how a device that already has books should join): { books: [sid] }.
+ */
+export async function accountSummary(token) {
+  const sids = new Set();
+  let since = 0;
+  for (let round = 0; round < 20; round++) {
+    const res = await post('sync', { since, dev: deviceId(), changes: [] }, token);
+    for (const c of res.changes || []) {
+      const m = /^b:([0-9a-f]+):meta$/.exec(c.k);
+      if (m) c.d ? sids.delete(m[1]) : sids.add(m[1]);
+    }
+    since = res.rev;
+    if (!res.more) break;
+  }
+  return { books: [...sids] };
+}
+
+export async function setAccount(token, email, { preferAccount: prefer = false } = {}) {
   const prev = account();
   await ready();
   if (!prev || prev.email !== email) {
@@ -554,7 +589,7 @@ export async function setAccount(token, email) {
       localStorage.removeItem(KNOWN_KEY);
     } catch (e) {}
   }
-  saveAccount({ token, email, since: 0, offset: (prev && prev.offset) || 0, lastSync: 0, error: null });
+  saveAccount({ token, email, since: 0, offset: (prev && prev.offset) || 0, lastSync: 0, error: null, preferAccount: !!prefer });
 }
 
 /** Forget the account on this device. The library and progress here stay as they are. */

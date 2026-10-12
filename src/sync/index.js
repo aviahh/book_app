@@ -7,7 +7,8 @@
 // minutes while it's on screen. It never waits for the network to let you
 // read: everything is saved on the device first.
 
-import { account, setAccount, forgetAccount, syncNow, watchLocal, deviceName, post, onRemoteBook } from './engine.js';
+import { account, setAccount, forgetAccount, syncNow, watchLocal, deviceName, post, onRemoteBook, accountSummary } from './engine.js';
+import { listBooks, removeBook } from '../db.js';
 import { keepBooksInDrive, syncFolder } from './drive.js';
 import { forgetFamily } from './family.js';
 
@@ -42,6 +43,7 @@ export function status() {
     error: (a && a.error) || null,
     busy: state.busy,
     signingIn: !!pendingCode,
+    joining: joining ? { here: joining.here, account: joining.account, email: joining.email } : null,
     drive: !!(a && a.token && a.drive),
   };
 }
@@ -131,13 +133,63 @@ export function takeSigninError() {
   return e || null;
 }
 
+let joining = null; // signed in, waiting for "combine or use the account's library"
+
 async function redeem(path, body) {
   const res = await post(path, Object.assign({ name: deviceName() }, body));
   pendingCode = null;
+  // This device already has books, and so does the account: ask how to join before changing anything.
+  const here = (await listBooks()).filter((b) => !b.cloud);
+  if (here.length && !(account() && account().email === res.email)) {
+    let summary = { books: [] };
+    try {
+      summary = await accountSummary(res.token);
+    } catch (e) {}
+    if (summary.books.length) {
+      joining = { token: res.token, email: res.email, here: here.length, account: summary.books.length, accountBooks: new Set(summary.books) };
+      emit();
+      return res;
+    }
+  }
   await setAccount(res.token, res.email);
   emit();
   await runSync();
   return res;
+}
+
+/**
+ * How this device joins an account that already has books:
+ *   'combine'  everything from both (the newer place in each book wins)
+ *   'account'  the account's library and places; books only on this device leave it (nothing in Drive is touched)
+ *   'cancel'   don't sign in after all
+ */
+export async function finishJoining(choice) {
+  const j = joining;
+  if (!j) return;
+  joining = null;
+  if (choice === 'cancel') {
+    try {
+      await post('auth/signout', {}, j.token);
+    } catch (e) {}
+    emit();
+    return;
+  }
+  if (choice === 'account') {
+    const { contentId } = await import('./items.js');
+    const { getBookFile } = await import('../db.js');
+    for (const b of await listBooks()) {
+      let sid = b.syncId;
+      if (!sid) {
+        try {
+          sid = await contentId(await getBookFile(b.id));
+        } catch (e) {}
+      }
+      if (!sid || !j.accountBooks.has(sid)) await removeBook(b.id, 'download');
+    }
+  }
+  await setAccount(j.token, j.email, { preferAccount: choice === 'account' });
+  emit();
+  await runSync();
 }
 
 /** Go to Google to sign in (the page comes back to Settings). */

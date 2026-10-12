@@ -139,3 +139,17 @@
 .rm-choice:active {
   background: var(--accent-soft);
 }
+
+/* A device with its own books joins an account: combine, or take the account's library */
+.sync-join {
+  padding: 16px 18px 18px;
+}
+.sj-title {
+  margin: 0;
+  font-weight: 600;
+}
+.sj-desc {
+  margin: 4px 0 14px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
