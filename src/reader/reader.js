@@ -32,6 +32,37 @@ export const REOPENING_KEY = 'folio.reopening.v1';
 // Text positions { index, offset } (span, character): order and equality.
 const before = (p, q) => p.index < q.index || (p.index === q.index && p.offset < q.offset);
 const same = (p, q) => p.index === q.index && p.offset === q.offset;
+
+/**
+ * The lines of a page's text as shown, in reading order: the first and last letter of each
+ * (in the page text) and where it is on screen now.
+ */
+function linesOf({ spans, map }) {
+  const first = new Map();
+  const last = new Map();
+  for (let k = 0; k < map.length; k++) {
+    const m = map[k];
+    if (!m) continue;
+    if (!first.has(m.index)) first.set(m.index, k);
+    last.set(m.index, k);
+  }
+  const lines = [];
+  let cur = null;
+  for (const [i, a] of first) {
+    const r = spans[i].getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    if (cur && Math.abs(r.top - cur.top0) <= Math.min(r.height, cur.h) * 0.5) {
+      cur.b = last.get(i);
+      cur.left = Math.min(cur.left, r.left);
+      cur.right = Math.max(cur.right, r.right);
+      cur.top = Math.min(cur.top, r.top);
+      cur.bottom = Math.max(cur.bottom, r.bottom);
+    } else {
+      lines.push((cur = { a, b: last.get(i), left: r.left, right: r.right, top: r.top, bottom: r.bottom, top0: r.top, h: r.height }));
+    }
+  }
+  return lines;
+}
 const LONG_PRESS_MS = 450; // press and hold a word: translate it
 const READ_ON_TURNS = 2; // after a jump, this many page turns forward make that place your reading position
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
@@ -3174,15 +3205,12 @@ class Reader {
     // The page's text layer may still be building after a turn.
     for (let t = 0; t < 30 && token === this.pieceToken && !this.#shownPageText(n); t++) await new Promise((res) => setTimeout(res, 100));
     if (token !== this.pieceToken || !this.speech.active) return;
-    this.cursor = { piece: i, seg, page: n, lineTop: null };
-    const rects = this.#markPiece();
-    if (this.camera.s > 1.02) this.#followVoice(true);
-    else if (rects.length) this.#keepInView(rects);
+    const rects = this.#markPiece({ piece: i, seg, page: n, started: performance.now(), rects: null, kept: false });
+    this.cursor.rects = rects;
   }
 
   /** Where a part of the sentence being read is in its page's text as shown now: { shown, a, b }, or null. */
-  #locatePart(part) {
-    const shown = this.#shownPageText(part.page);
+  #locatePart(part, shown = this.#shownPageText(part.page)) {
     if (!shown) return null;
     let s = part.s;
     let e = part.e;
@@ -3203,7 +3231,8 @@ class Reader {
   }
 
   /** Mark the parts of the sentence being read that are on screen. Returns their rectangles. */
-  #markPiece() {
+  #markPiece(next) {
+    if (next) this.cursor = next;
     const c = this.cursor;
     if (!c) return [];
     const rects = [];
@@ -3218,91 +3247,154 @@ class Reader {
   }
 
   /**
-   * Following the voice within a sentence, several times a second (where it is
-   * is estimated from how far into the sentence's audio it has got):
+   * Following the voice, every frame while it reads (where it is is estimated
+   * from how far into the sentence's audio it has got, spread evenly over the
+   * sentence's letters):
    *  - when it reaches the next page mid-sentence, that page is turned to (or
    *    scrolled to) right away, and the rest of the sentence marked there;
-   *  - zoomed in, the view stays still while the voice reads across it; when
-   *    the voice is about two thirds of the way over, one slow, smooth glide
-   *    (about a second, soft at both ends) brings the next stretch of the line
-   *    into view; a new line is moved to quickly;
+   *  - zoomed in, the view pans along each line in one continuous, even
+   *    movement, timed to the voice: the line's start is near the left edge
+   *    when the voice begins it and its end near the right edge when the voice
+   *    gets there. A line that fits on screen isn't panned at all. Then a
+   *    quick, smooth move to the start of the next line;
+   *  - the place on the line is counted over the whole line, not the sentence,
+   *    so a sentence that starts mid-line carries on from where the last one
+   *    ended (no stepping back and forth between sentences);
    *  - the line being read is kept away from the top and bottom edges.
-   * After you move the view yourself it waits a moment before moving it again.
+   * The view is moved by a soft spring towards where it should be, so it never
+   * jumps and never stops abruptly. After you move the view yourself it waits a
+   * moment before following again.
    */
-  async #followVoice(start = false) {
+  #followFrame(now) {
+    this.followRaf = requestAnimationFrame((t) => this.#followFrame(t));
     const c = this.cursor;
     const cam = this.camera;
-    if (!c || document.hidden || this.busy || c.turning) return;
-    if (!start && performance.now() < (c.holdUntil || 0)) return; // a quick move (new line, page) is still under way
-    const frac = start ? 0 : this.speech.progress();
-    if (frac == null) return;
+    const f = this.follow || (this.follow = { vx: 0, vy: 0, at: now, goalTy: null });
+    const dt = Math.min(0.05, Math.max(0, (now - f.at) / 1000));
+    f.at = now;
+    const rest = () => {
+      f.vx = 0;
+      f.vy = 0;
+      f.goalTy = null;
+    };
+    if (!c || document.hidden || this.busy || c.turning || cam.raf || now - (this.userMovedAt || 0) < 4000) return rest();
+    const frac = this.speech.progress();
+    if (frac == null) {
+      // A voice that can't say how far it is: bring the sentence into view once.
+      if (!c.kept && now - c.started > 1500 && c.rects && c.rects.length) (c.kept = true), this.#keepInView(c.rects);
+      return rest();
+    }
     const parts = c.seg.parts;
     const total = parts.reduce((n, p) => n + Math.max(1, p.e - p.s), 0);
-    let at = Math.floor(frac * total);
-    let part = parts[0];
-    for (const p of parts) {
-      part = p;
-      const len = Math.max(1, p.e - p.s);
+    let at = frac * total;
+    let pi = 0;
+    for (; pi < parts.length - 1; pi++) {
+      const len = Math.max(1, parts[pi].e - parts[pi].s);
       if (at < len) break;
       at -= len;
     }
-    if (part.page !== c.page) {
-      // Onto the next page in the middle of the sentence: show it now.
-      c.page = part.page;
-      c.lineTop = null;
-      c.turning = true;
-      try {
-        if (this.mode === 'double') {
-          if (!visiblePages(spreadPages('double', this.spread, this.total)).includes(part.page)) await this.go(spreadOf('double', part.page));
-        } else if (!this.#pageInView(part.page)) {
-          await this.#scrollToPage(part.page);
-        }
-        for (let t = 0; t < 20 && this.cursor === c && !this.#shownPageText(part.page); t++) await new Promise((res) => setTimeout(res, 100));
-      } finally {
-        c.turning = false;
-      }
-      if (this.cursor !== c) return;
-      this.#markPiece();
-      start = true;
-    }
+    const part = parts[pi];
+    if (part.page !== c.page) return rest(), this.#voiceOnPage(c, part.page);
     const zoomed = cam.s > 1.02;
-    if (!zoomed && this.mode !== 'single') return; // a whole spread is in view
-    if (!start && performance.now() - (this.userMovedAt || 0) < 4000) return;
-    const loc = this.#locatePart(part);
-    if (!loc) return;
-    const { shown } = loc;
-    let k = Math.min(loc.b, loc.a + at);
-    while (k < loc.b && !shown.map[k]) k++;
-    if (!shown.map[k]) return;
-    const kr = rangeRects(shown.spans, shown.map[k], { index: shown.map[k].index, offset: shown.map[k].offset + 1 });
-    if (!kr.length) return;
-    const r = kr[0];
+    if (!zoomed && this.mode !== 'single') return rest(); // a whole spread is in view
+    const line = this.#voiceLine(c, pi, at);
+    if (!line) return rest();
     const box = this.el.getBoundingClientRect();
-    const newLine = c.lineTop == null || Math.abs(r.top - c.lineTop) > r.height * 0.6;
-    c.lineTop = r.top;
-    let dx = 0;
-    let dy = 0;
-    let ms = 0;
+    const shown = cam.shown || cam;
+    const sign = this.rtl ? -1 : 1; // (a right-to-left comic's page area is mirrored)
+    // Where the line is on screen now (measured when it was laid out, moved with the view since).
+    const ox = sign * (shown.tx - line.tx);
+    const oy = shown.ty - line.ty;
+    const x0 = line.left + ox;
+    const x1 = line.right + ox;
+    const top = line.top + oy;
+    const bottom = line.bottom + oy;
+    let goalTx = shown.tx;
     if (zoomed) {
-      if (newLine) {
-        // A new line (or sentence): if its start is out of sight, there quickly.
-        if (r.left < box.left + this.W * 0.05 || r.right > box.right - this.W * 0.05) (dx = box.left + this.W * 0.1 - r.left), (ms = 320);
-      } else if (r.right > box.right - this.W * 0.06 || r.left < box.left) {
-        // The voice got ahead of the view (a fast voice): catch up, still smoothly.
-        dx = box.left + this.W * 0.18 - r.left;
-        ms = 650;
-      } else if (r.left > box.left + this.W * 0.58) {
-        // Along the line: the view stays still while the voice reads across it, then, when the voice is about
-        // two thirds of the way over, one slow, smooth glide brings the next stretch of the line into view.
-        dx = box.left + this.W * 0.15 - r.left;
-        ms = Math.max(850, Math.min(1500, (Math.abs(dx) / this.W) * 2200));
-      }
+      const m = this.W * 0.07;
+      const room = this.W - 2 * m;
+      const w = x1 - x0;
+      // Too long for the screen: pan from its start to its end as the voice goes along it.
+      // Otherwise only keep all of it in sight.
+      const want = w > room ? box.left + m - line.f * (w - room) : Math.min(Math.max(x0, box.left + m), box.left + m + room - w);
+      goalTx = shown.tx + sign * (want - x0);
     }
-    if (r.top < box.top + this.H * 0.1 || r.bottom > box.bottom - this.H * 0.15) (dy = box.top + this.H * 0.35 - r.top), (ms = Math.max(ms, 320));
-    if (this.rtl) dx = -dx;
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 2) return;
-    c.holdUntil = performance.now() + ms; // a move is never cut short by the next look
-    cam.animateTo(cam.s, cam.tx + dx, cam.ty + dy, ms, { gentle: true });
+    // Up and down: only when the line nears the top or bottom, then to about a third down.
+    if (top < box.top + this.H * 0.1 || bottom > box.top + this.H * 0.85) f.goalTy = shown.ty + (box.top + this.H * 0.33 - top);
+    const goalTy = f.goalTy == null ? shown.ty : f.goalTy;
+    // Far away (the voice went on beyond what is in view): there in one quick move.
+    if (Math.abs(goalTy - cam.ty) > this.H * 0.7 || Math.abs(goalTx - cam.tx) > this.W * 1.5) {
+      rest();
+      cam.animateTo(cam.s, goalTx, goalTy, 380);
+      return;
+    }
+    // A critically damped spring: smooth start, no overshoot; along a line it follows the even pan closely.
+    const w0 = 10;
+    const ax = w0 * w0 * (goalTx - cam.tx) - 2 * w0 * f.vx;
+    const ay = w0 * w0 * (goalTy - cam.ty) - 2 * w0 * f.vy;
+    f.vx += ax * dt;
+    f.vy += ay * dt;
+    if (Math.abs(goalTx - cam.tx) < 0.3 && Math.abs(f.vx) < 2) f.vx = 0;
+    if (Math.abs(goalTy - cam.ty) < 0.3 && Math.abs(f.vy) < 2) (f.vy = 0), (f.goalTy = null);
+    if (!f.vx && !f.vy) return;
+    const tx = cam.tx + f.vx * dt;
+    const ty = cam.ty + f.vy * dt;
+    cam.set(cam.s, tx, ty);
+    // Held at an edge of the book: don't keep pushing.
+    if (Math.abs(cam.tx - tx) > 0.5) f.vx = 0;
+    if (Math.abs(cam.ty - ty) > 0.5) (f.vy = 0), (f.goalTy = null);
+    cam.flush();
+  }
+
+  /** The voice went on to the next page in the middle of the sentence: show it now. */
+  async #voiceOnPage(c, page) {
+    c.page = page;
+    c.turning = true;
+    try {
+      if (this.mode === 'double') {
+        if (!visiblePages(spreadPages('double', this.spread, this.total)).includes(page)) await this.go(spreadOf('double', page));
+      } else if (!this.#shownPageText(page)) {
+        // (Scrolling: a page whose words are there already is gone on to like the next line, below.)
+        await this.#scrollToPage(page);
+      }
+      for (let t = 0; t < 20 && this.cursor === c && !this.#shownPageText(page); t++) await new Promise((res) => setTimeout(res, 100));
+    } finally {
+      c.turning = false;
+    }
+    if (this.cursor === c) c.rects = this.#markPiece();
+  }
+
+  /**
+   * The line the voice is on, part `pi` of the sentence, `at` letters into it: its place on
+   * screen (as measured, with the view's position then) and how far along the whole line the
+   * voice is (0 to 1). The page's lines are measured once and kept until the page or zoom changes.
+   */
+  #voiceLine(c, pi, at) {
+    const cam = this.camera;
+    const shownCam = cam.shown || cam;
+    const part = c.seg.parts[pi];
+    let lay = c.layout && c.layout.page === part.page ? c.layout : null;
+    if (lay && (lay.s !== shownCam.s || lay.W !== this.W || lay.H !== this.H || !lay.spans[0].isConnected)) lay = null;
+    if (!lay) {
+      const shown = this.#shownPageText(part.page);
+      if (!shown) return null;
+      lay = c.layout = { page: part.page, s: shownCam.s, W: this.W, H: this.H, tx: shownCam.tx, ty: shownCam.ty, spans: shown.spans, shown, lines: linesOf(shown), locs: [] };
+    }
+    if (!(pi in lay.locs)) lay.locs[pi] = this.#locatePart(part, lay.shown);
+    const loc = lay.locs[pi];
+    if (!loc) return null;
+    const k = Math.min(loc.b, loc.a + at);
+    const ki = Math.floor(k);
+    let lo = 0;
+    let hi = lay.lines.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lay.lines[mid].a <= ki) lo = mid;
+      else hi = mid - 1;
+    }
+    const line = lay.lines[lo];
+    if (!line) return null;
+    return { ...line, tx: lay.tx, ty: lay.ty, f: Math.max(0, Math.min(1, (k - line.a) / Math.max(1, line.b + 1 - line.a))) };
   }
 
   /** Is any of page n on screen now (one-page scroll)? */
@@ -3343,8 +3435,8 @@ class Reader {
     const bar = this.el.querySelector('.tts-bar');
     const btn = bar.querySelector('[data-act="ttsToggle"]');
     if (state === 'idle') {
-      clearInterval(this.followTimer);
-      this.followTimer = 0;
+      cancelAnimationFrame(this.followRaf);
+      this.followRaf = 0;
       this.cursor = null;
       if (this.speechWasActive) this.#clearHighlights();
       this.speechWasActive = false;
@@ -3361,7 +3453,7 @@ class Reader {
     }
     this.speechWasActive = true;
     this.#keepAwake(true);
-    if (!this.followTimer) this.followTimer = setInterval(() => this.#followVoice(), 140);
+    if (!this.followRaf) this.followRaf = requestAnimationFrame((t) => this.#followFrame(t));
     bar.hidden = false;
     bar.dataset.state = state;
     btn.innerHTML = state === 'paused' ? icons.play : icons.pause;
@@ -3414,6 +3506,8 @@ class Reader {
     // Android show its "swipe to exit full screen" notice every time. (The full-screen button
     // in the reader still turns it off.)
     this.speech.stop(true);
+    cancelAnimationFrame(this.followRaf);
+    this.followRaf = 0;
     this.#keepAwake(false);
     this.tools.destroy();
     this.lock.destroy();
