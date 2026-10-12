@@ -81,6 +81,9 @@ export async function mountSources(view, _p, nav) {
     const a = e.target.closest('a[href^="#/"]');
     if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
     e.preventDefault();
+    // The link at the top goes back to the screen you came from (one step, like the Back button);
+    // its address is only where to go when there is nothing to go back to.
+    if (a.hasAttribute('data-back') && history.state && history.state.stack && history.state.stack.length > 2) return nav.back();
     nav(a.getAttribute('href'));
   });
   const q = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -99,7 +102,7 @@ function drawCatalogs(content, view, nav) {
     const list = catalogs();
     content.innerHTML = `
       <section class="src">
-        <a class="crumb" href="#/library">${icons.back}<span>Library</span></a>
+        <a class="crumb" data-back href="#/library">${icons.back}<span>Library</span></a>
         <h1>Find books</h1>
         <p class="src-lead">Free books from open catalogs, straight into your library.</p>
         <div class="src-cats">
@@ -177,7 +180,7 @@ function drawCatalogs(content, view, nav) {
 async function drawPage(content, view, nav, cat, url, entryId, words) {
   const auth = loginFor(cat); // (sent only to the catalog's own address)
   const isStart = url === cat.url && !words;
-  content.innerHTML = `<section class="src"><a class="crumb" href="${esc(isStart ? '#/sources' : link({ c: cat.id }))}">${icons.back}<span>${esc(isStart ? 'Find books' : cat.name)}</span></a><div class="src-wait"><span class="sync-spin" aria-hidden="true"></span></div></section>`;
+  content.innerHTML = `<section class="src"><a class="crumb" data-back href="${esc(isStart ? '#/sources' : link({ c: cat.id }))}">${icons.back}<span>${esc(isStart ? 'Find books' : 'Back')}</span></a><div class="src-wait"><span class="sync-spin" aria-hidden="true"></span></div></section>`;
   let page;
   try {
     page = await loadPage(url, auth);
@@ -223,7 +226,7 @@ async function drawPage(content, view, nav, cat, url, entryId, words) {
     const title = words ? `“${words}”` : isStart ? cat.name : page.title;
     content.innerHTML = `
       <section class="src">
-        <a class="crumb" href="${esc(isStart ? '#/sources' : link({ c: cat.id }))}">${icons.back}<span>${esc(isStart ? 'Find books' : cat.name)}</span></a>
+        <a class="crumb" data-back href="${esc(isStart ? '#/sources' : link({ c: cat.id }))}">${icons.back}<span>${esc(isStart ? 'Find books' : 'Back')}</span></a>
         <h1 class="src-title">${esc(title)}</h1>
         ${template ? `<form class="search src-search" data-src-search>${icons.search}<input type="search" name="q" placeholder="Search ${esc(cat.name)}" aria-label="Search this catalog" value="${esc(words)}"></form>` : ''}
         ${Object.keys(groups)
@@ -277,7 +280,7 @@ async function drawBook(content, view, nav, cat, url, it, isStart) {
     const long = sum.join(' ').length > 520;
     content.innerHTML = `
       <section class="src src-book">
-        <a class="crumb" href="${esc(isStart ? '#/sources' : url === cat.url ? link({ c: cat.id }) : link({ c: cat.id, u: url }))}">${icons.back}<span>${esc(cat.name)}</span></a>
+        <a class="crumb" data-back href="${esc(isStart ? '#/sources' : link({ c: cat.id }))}">${icons.back}<span>Back</span></a>
         <div class="src-book-top">
           <div class="src-cover">${img(it.image || it.thumb) || `<span class="src-cover-blank">${esc(it.title.slice(0, 60))}</span>`}</div>
           <div class="src-book-info">
