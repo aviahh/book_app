@@ -2138,6 +2138,7 @@ class Reader {
     const dx = p.x - ptr.x0;
     const dy = p.y - ptr.y0;
     if (Math.hypot(dx, dy) > MOVE_SLOP) ptr.moved = true;
+    if (ptr.moved) this.userMovedAt = performance.now(); // (read-aloud waits a moment before following again)
 
     if (!ptr.drag && !ptr.pan && !ptr.chromeShown && ptr.moved) {
       if (this.mode === 'single' || this.camera.zoomed) {
@@ -2250,6 +2251,7 @@ class Reader {
   }
 
   #pinchStart() {
+    this.userMovedAt = performance.now();
     const [a, b] = [...this.pointers.values()];
     this.camera.stop();
     this.#closePopup();
@@ -2437,6 +2439,7 @@ class Reader {
 
   #wheel(e) {
     e.preventDefault();
+    this.userMovedAt = performance.now();
     const cam = this.camera;
     const p = this.#local(e);
     if (e.ctrlKey) {
@@ -3146,6 +3149,7 @@ class Reader {
     for (let t = 0; t < 30 && token === this.pieceToken && !this.#shownPageText(n); t++) await new Promise((res) => setTimeout(res, 100));
     if (token !== this.pieceToken || !this.speech.active) return;
     const rects = [];
+    const parts = [];
     for (const part of seg.parts) {
       const shown = this.#shownPageText(part.page);
       if (!shown) continue;
@@ -3166,10 +3170,55 @@ class Reader {
       if (a >= e || !shown.map[b]) continue;
       const end = { index: shown.map[b].index, offset: shown.map[b].offset + 1 };
       rects.push(...rangeRects(shown.spans, shown.map[a], end));
+      parts.push({ shown, a, b });
     }
     if (!rects.length) return;
     this.#drawHighlights(rects, 'speak');
-    this.#keepInView(rects);
+    this.cursor = { piece: i, parts };
+    if (this.camera.s > 1.02) this.#followVoice(true);
+    else this.#keepInView(rects);
+  }
+
+  /**
+   * Zoomed in, reading aloud: the words being read now (estimated from how far
+   * into the sentence the voice is) and the next few stay on screen. The view
+   * moves sideways along the line, and back to the start of the next one.
+   * After you move the view yourself it waits a moment before following again.
+   */
+  #followVoice(start = false) {
+    const c = this.cursor;
+    const cam = this.camera;
+    if (!c || !c.parts.length || cam.s <= 1.02 || document.hidden) return;
+    if (!start && performance.now() - (this.userMovedAt || 0) < 4000) return;
+    const frac = start ? 0 : this.speech.progress();
+    if (frac == null) return;
+    const total = c.parts.reduce((n, p) => n + (p.b - p.a + 1), 0);
+    let at = Math.floor(frac * total);
+    let part = c.parts[0];
+    for (const p of c.parts) {
+      part = p;
+      if (at <= p.b - p.a) break;
+      at -= p.b - p.a + 1;
+    }
+    const { shown } = part;
+    let k = Math.min(part.b, part.a + at);
+    while (k < part.b && !shown.map[k]) k++;
+    let j = Math.min(part.b, k + 14); // a little of what comes next
+    while (j > k && !shown.map[j]) j--;
+    if (!shown.map[k] || !shown.map[j]) return;
+    const rects = rangeRects(shown.spans, shown.map[k], { index: shown.map[j].index, offset: shown.map[j].offset + 1 });
+    if (!rects.length) return;
+    const r = rects[0];
+    const last = rects[rects.length - 1].top === r.top ? rects[rects.length - 1] : r; // the same line only
+    const box = this.el.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    if (last.right > box.right - this.W * 0.1) dx = box.left + this.W * 0.22 - r.left; // running off the right: bring it to the left part
+    else if (r.left < box.left + this.W * 0.04) dx = box.left + this.W * 0.08 - r.left; // a new line began off to the left
+    if (r.top < box.top + this.H * 0.1 || r.bottom > box.bottom - this.H * 0.15) dy = box.top + this.H * 0.35 - r.top;
+    if (this.rtl) dx = -dx;
+    if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+    cam.animateTo(cam.s, cam.tx + dx, cam.ty + dy, start ? 260 : 340);
   }
 
   /** Is any of page n on screen now (one-page scroll)? */
@@ -3210,6 +3259,9 @@ class Reader {
     const bar = this.el.querySelector('.tts-bar');
     const btn = bar.querySelector('[data-act="ttsToggle"]');
     if (state === 'idle') {
+      clearInterval(this.followTimer);
+      this.followTimer = 0;
+      this.cursor = null;
       if (this.speechWasActive) this.#clearHighlights();
       this.speechWasActive = false;
       // The bar stays while read-aloud mode is on, waiting for the next passage.
@@ -3225,6 +3277,7 @@ class Reader {
     }
     this.speechWasActive = true;
     this.#keepAwake(true);
+    if (!this.followTimer) this.followTimer = setInterval(() => this.#followVoice(), 300);
     bar.hidden = false;
     bar.dataset.state = state;
     btn.innerHTML = state === 'paused' ? icons.play : icons.pause;

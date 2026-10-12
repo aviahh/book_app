@@ -514,7 +514,7 @@ export class Speech {
         await this.#appendTo(sb, bytes);
         if (this.ms !== ms) return;
         const end = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : at;
-        ms.pieces.set(i, { start: at, end });
+        ms.pieces.set(i, { start: at, end, voice: m.voiceEnd !== Infinity ? m.voiceEnd - m.lead : 0 });
         ms.next = end;
         ms.nextIndex = i + 1;
         if (!ms.started) {
@@ -741,8 +741,27 @@ export class Speech {
     this.onPiece(i);
     const u = new SpeechSynthesisUtterance(this.chunks[i]);
     u.lang = this.lang === 'iw' ? 'he-IL' : this.lang;
+    this.devFrac = 0;
+    const len = this.chunks[i].length || 1;
+    u.onboundary = (e) => gen === this.gen && (this.devFrac = Math.min(1, (e.charIndex || 0) / len));
     u.onend = () => this.usingFallback && gen === this.gen && this.#deviceSay(i + 1, gen);
     speechSynthesis.speak(u);
+  }
+
+  /** How far into the piece being read the voice is (0 to 1), or null when that isn't known. */
+  progress() {
+    if (this.state !== 'playing') return null;
+    const clamp = (x) => Math.max(0, Math.min(1, x));
+    const ms = this.ms;
+    if (ms) {
+      const p = ms.pieces.get(this.index);
+      if (!p) return null;
+      const len = p.voice || p.end - p.start;
+      return len > 0 ? clamp((ms.audio.currentTime - p.start) / len) : null;
+    }
+    if (this.usingFallback) return this.devFrac == null ? null : this.devFrac;
+    const a = this.players[this.cur];
+    return a && a.duration && isFinite(a.duration) ? clamp(a.currentTime / a.duration) : null;
   }
 
   #set(state, finished = false) {
