@@ -93,8 +93,9 @@ export function startSync() {
   const m = /[?&]signin=([\w-]+)/.exec(location.hash);
   const err = /[?&]signin_error=(\w+)/.exec(location.hash);
   const drive = /[?&]drive(_error)?=(\w+)/.exec(location.hash);
+  const driveCode = /[?&]drive_code=([\w-]+)/.exec(location.hash);
   if (drive) state.driveNote = drive[1] ? drive[2] : 'on';
-  if (m || err || drive) {
+  if (m || err || drive || driveCode) {
     try {
       history.replaceState(history.state, '', '#/settings');
     } catch (e) {}
@@ -114,6 +115,17 @@ export function startSync() {
       pendingCode = null;
       emit();
     });
+  } else if (driveCode && status().signedIn) {
+    // Back from allowing Drive: this signed-in device claims the grant for its account.
+    post('drive/finish', { code: driveCode[1] }, account().token)
+      .then(
+        () => (state.driveNote = 'on'),
+        (e) => (state.driveNote = String(e.message) === 'account' ? 'account' : 'cancelled'),
+      )
+      .then(() => {
+        emit();
+        soon(200);
+      });
   } else if (status().signedIn) {
     soon(drive ? 200 : 1500);
   }

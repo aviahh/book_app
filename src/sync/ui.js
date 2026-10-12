@@ -2,6 +2,7 @@
 import './sync.css';
 import { status, onSyncStatus, runSync, signInWithGoogle, linkWithCode, makeLinkCode, signOut, takeSigninError, takeDriveNote, finishJoining } from './index.js';
 import { connectDrive, disconnectDrive, driveSummary, onDriveProgress } from './drive.js';
+import { nav } from '../router.js';
 import { familyList, familyCached, shareCode, joinFamily, stopSharingWith, leaveFamily, ownerName } from './family.js';
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -26,7 +27,7 @@ const DRIVE_NOTES = {
   on: 'Google Drive is connected. Your library now lives in the “Folio” folder there.',
   cancelled: 'Google Drive wasn’t connected.',
   denied: 'Google Drive wasn’t connected: Folio needs permission to see and keep the books in its folder.',
-  account: 'Use the same Google account you’re signed in with.',
+  account: 'Google Drive wasn’t connected: that link was started by a different Folio account. Connect it from here.',
 };
 const DRIVE_DESC = 'Your library lives in a “Folio” folder in your own Google Drive. Put books there any way you like (from a computer, a phone, or here) and every device has them. Delete one there and it leaves every device. Folio only works inside that folder.';
 
@@ -79,7 +80,7 @@ export function mountSyncSettings(group) {
     } else {
       const when = st.busy && !st.lastSync ? 'Syncing…' : st.lastSync ? `Synced ${ago(st.lastSync)}` : 'Not synced yet';
       const quiet = st.error === 'offline' || navigator.onLine === false ? `${when} · offline, changes wait on this device` : st.error && Date.now() - st.lastSync > 3600e3 ? `${when} · couldn’t reach the server` : when;
-      html += row(esc(st.email || 'Signed in'), esc(quiet), '<button class="btn subtle" data-sync="out">Sign out</button>');
+      html += row(esc(st.email || 'Signed in'), esc(quiet), '<button class="btn subtle" data-sync="account">Account</button>');
       html += row(
         'Library in Google Drive',
         esc(driveNote || DRIVE_DESC),
@@ -185,6 +186,8 @@ export function mountSyncSettings(group) {
       entering = true;
       linkError = '';
       draw();
+    } else if (act === 'account') {
+      nav('#/account');
     } else if (act === 'out') {
       if (!confirm('Sign out on this device? Your books and progress stay here; this device just stops syncing.')) return;
       b.disabled = true;
@@ -255,6 +258,8 @@ export function mountSyncSettings(group) {
 
   const update = () => {
     if (!group.isConnected) return stop(); // Settings was closed
+    const n = takeDriveNote(); // (connecting Drive finishes just after the page opens)
+    if (n) driveNote = DRIVE_NOTES[n] || DRIVE_NOTES.cancelled;
     if (!group.querySelector('.sync-input')) draw(); // don't redraw away a code being typed
   };
   const off = onSyncStatus(update);

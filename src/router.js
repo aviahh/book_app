@@ -24,6 +24,7 @@ function defaultStack(hash) {
   if (/^#\/library\?(series|family)=/.test(hash)) return [ROOT, '#/library', hash];
   if (hash.startsWith('#/library')) return [ROOT, hash];
   if (hash.startsWith('#/read/')) return [ROOT, '#/library', hash];
+  if (hash.startsWith('#/account')) return [ROOT, '#/settings', hash];
   if (hash.startsWith('#/settings')) {
     const from = new URLSearchParams(hash.split('?')[1] || '').get('from');
     const below = from && !from.startsWith('#/settings') ? defaultStack(norm(from)) : [ROOT];

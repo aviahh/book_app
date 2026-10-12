@@ -275,7 +275,7 @@ async function backup(button, withBooks) {
   }
 }
 
-async function deliver({ blob, name }, view, strict = false) {
+export async function deliver({ blob, name }, view, strict = false) {
   // The share menu offers Google Drive, iCloud Drive, Files… Android only
   // shares a few file types, so fall back to a plain-text label there; the
   // contents are the same and Restore reads either.

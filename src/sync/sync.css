@@ -153,3 +153,27 @@
   color: var(--muted);
   font-size: 0.88rem;
 }
+
+/* Account screen */
+.account .acct-lead {
+  margin: 14px 0 22px;
+  color: var(--muted);
+}
+.account .acct-foot {
+  margin: 8px 4px 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.account .acct-danger {
+  color: var(--danger);
+}
+.account .acct-delete {
+  border-top: 1px solid var(--line);
+}
+.account .acct-delete .rm-choice.danger b {
+  color: var(--danger);
+}
+.account .acct-out {
+  margin: 28px 0 8px;
+  text-align: center;
+}
