@@ -4,7 +4,7 @@
 // leads, the free edge trails behind. Each strip is lit by its own angle, which
 // gives the curved highlight-and-shadow look of real paper.
 //
-// Same interface as Flipper: set(t), progressFromX(), animateTo(), destroy(), t.
+// Same interface as FoldFlipper: set(t), progressFromX(), animateTo(), destroy(), t.
 
 const N = 24; // strips
 

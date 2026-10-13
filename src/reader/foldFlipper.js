@@ -6,7 +6,7 @@
 // Geometry is done in a "frame" where the turning page always sits on the
 // right half [pw, 2pw]; backward turns are mirrored into that frame.
 //
-// Same interface as Flipper: set(t), follow(x, y, x0, y0), animateTo(), destroy(), t.
+// The page-turner interface (shared with BendFlipper): set(t), follow(x, y, x0, y0), animateTo(), destroy(), t.
 
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 

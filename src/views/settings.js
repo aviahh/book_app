@@ -58,7 +58,7 @@ export async function mountSettings(view, _p, nav) {
 
       <h2>Turning pages</h2>
       <div class="set-group">
-        ${row('Page-turn effect', 'How pages turn in landscape (two pages). In portrait, pages scroll.', select('pageTurn', [['bend', 'Soft page'], ['fold', 'Paper corner'], ['curl', 'Classic 3D'], ['slide', 'Slide'], ['none', 'None']]))}
+        ${row('Page-turn effect', 'How pages turn in landscape (two pages). In portrait, pages scroll.', select('pageTurn', [['bend', 'Soft page'], ['fold', 'Paper corner'], ['slide', 'Slide'], ['none', 'None']]))}
         ${row('While zoomed in', '', select('zoomTurn', [['stay', 'Stay zoomed'], ['zoomOut', 'Zoom out first'], ['animate', 'Turn while zoomed']]), {
           sub: true,
           dyn: (s) => ({

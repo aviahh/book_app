@@ -10,7 +10,7 @@ export const DEFAULTS = {
   jumpPages: 5,
   toolbarPosition: 'bottom', // 'top' | 'bottom'
   autoHideSeconds: 3.5,
-  pageTurn: 'fold', // landscape only: 'fold' | 'bend' | 'curl' | 'slide' | 'none'
+  pageTurn: 'fold', // landscape only: 'fold' | 'bend' | 'slide' | 'none'
   fullscreen: true, // enter full screen when a book opens
   focusZoom: true, // landscape: zooming in far enough switches to one page at a time
   zoomTurn: 'stay', // landscape, zoomed in: 'stay' (instant, keep zoom) | 'zoomOut' (zoom out, then turn) | 'animate'
@@ -23,6 +23,7 @@ export const DEFAULTS = {
   returnSeconds: 7, // "Back to page N" stays this long after a jump / after Search closes
   fab: true, // the floating tools bubble in the reader
   fabTools: ['search', 'text', 'bookmark', 'stopmark', 'bookmarks', 'readAloud', 'contents'], // its favorites, in order
+  readFollow: true, // continuous read aloud: the view follows the voice (turns pages; zoomed in, moves along the lines)
   readContinuous: false, // read aloud: false = drag across a passage to read it; true = tap where to start, and it reads on
   speechVoice: 'microsoft', // 'microsoft' (natural voices, as in EZ_shortcut) | 'google'
   // EPUB (flowing text) books
@@ -43,6 +44,7 @@ function load() {
       if (!saved.fabTools.includes('text')) saved.fabTools.splice(saved.fabTools[0] === 'search' ? 1 : 0, 0, 'text');
       saved.fabText = true;
     }
+    if (saved.pageTurn === 'curl') saved.pageTurn = 'fold'; // (the Classic 3D page turn was retired)
     return { ...DEFAULTS, ...saved };
   } catch {
     return { ...DEFAULTS };

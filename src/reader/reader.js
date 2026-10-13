@@ -1,7 +1,7 @@
 // The reading view: layout, navigation, page turning, zoom & pan, toolbar,
 // thumbnails, word translation, read-aloud selection and the orientation lock.
 //
-// Landscape ("double"): a book of facing pages, turned with a page curl.
+// Landscape ("double"): a book of facing pages, turned like paper.
 // Portrait ("single"): pages stacked in a vertical strip and scrolled.
 // Both can be pinch-zoomed and panned.
 import { getBook, getBookFile, updateBook } from '../db.js';
@@ -11,7 +11,6 @@ import { icons } from '../icons.js';
 import { Speech, translate, pronounce, stopPronounce, guessLang, isRtl } from '../google.js';
 import { trackReading } from '../stats.js';
 import { PageCache } from './pageCache.js';
-import { Flipper } from './flipper.js';
 import { FoldFlipper } from './foldFlipper.js';
 import { BendFlipper } from './bendFlipper.js';
 import { Camera } from './camera.js';
@@ -67,6 +66,7 @@ const LONG_PRESS_MS = 450; // press and hold a word: translate it
 const READ_ON_TURNS = 2; // after a jump, this many page turns forward make that place your reading position
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
+const SWIPE_TURN_ZOOM = 1.35; // landscape: zoomed in up to this, a sideways swipe still turns the page
 const STRIP_GAP = 14;
 // One page when zoomed in (landscape): zooming out stops where the page is
 // as wide as the screen; past that it resists (FOCUS_GIVE: how much of the
@@ -77,7 +77,7 @@ const FOCUS_GIVE = 0.55;
 const FOCUS_MS = 300;
 const STRIP_PAD = 18;
 // Animated page-turn styles (landscape) → their engines.
-const TURNERS = { curl: Flipper, fold: FoldFlipper, bend: BendFlipper };
+const TURNERS = { fold: FoldFlipper, bend: BendFlipper };
 
 const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
 
@@ -400,8 +400,13 @@ class Reader {
         <button data-act="ttsBack" class="tts-btn" aria-label="Back a sentence">${icons.rewind}</button>
         <button data-act="ttsToggle" class="tts-btn" aria-label="Pause">${icons.pause}</button>
         <button data-act="ttsStop" class="tts-btn" aria-label="Stop">${icons.stop}</button>
+        <button data-act="ttsMore" class="tts-more" aria-expanded="false" aria-label="More">${icons.chevronRight}</button>
         <span class="tts-sep"></span>
         <button data-act="ttsClose" class="tts-close" aria-label="Close read aloud">${icons.close}</button>
+        <div class="tts-panel" hidden>
+          <button data-act="ttsFollow" class="tts-mode" role="switch" aria-checked="true">Follow the voice</button>
+          <button data-act="ttsPick" class="tts-pick" aria-pressed="false">Read from another place</button>
+        </div>
       </div>
       <div class="word-pop" hidden role="dialog" aria-label="Translation"></div>
       <div class="toast" hidden></div>
@@ -1502,10 +1507,11 @@ class Reader {
       this.spread = target;
       await this.#renderSpread(target, { replace: [...this.bookEl.children] });
     }
-    // Still zoomed in? Start the new spread from its top-left corner.
+    // Still zoomed in? Start the new spread from its top-left corner (going back: top-right).
     if (this.camera.zoomed) {
       const box = this.camera.box;
-      this.camera.set(this.camera.s, -box.x * this.camera.s, -box.y * this.camera.s);
+      const s = this.camera.s;
+      this.camera.set(s, target < from ? this.W - (box.x + box.w) * s : -box.x * s, -box.y * s);
     }
     this.#afterMove();
   }
@@ -1571,7 +1577,7 @@ class Reader {
     book.append(marker);
     const offFrom = this.#offsetFor(from);
     const offTo = this.#offsetFor(target);
-    const Turner = TURNERS[this.settings.pageTurn] || Flipper;
+    const Turner = TURNERS[this.settings.pageTurn] || FoldFlipper;
     const partsOf = (f) => [f.cast, f.leaf, f.root].filter(Boolean);
     // Pages inside the bundle: paper with the impression of printed lines
     // (Soft page slices real page images, so it gets plain paper).
@@ -1699,7 +1705,7 @@ class Reader {
     book.append(...under);
     const offFrom = this.#offsetFor(from);
     const offTo = this.#offsetFor(target);
-    const Turner = TURNERS[this.settings.pageTurn] || Flipper;
+    const Turner = TURNERS[this.settings.pageTurn] || FoldFlipper;
     const flip = new Turner({
       book,
       mode: this.mode,
@@ -1907,6 +1913,17 @@ class Reader {
       case 'ttsMode':
         setSetting('readContinuous', !this.settings.readContinuous);
         return this.#onSpeechState(this.speech.state);
+      case 'ttsMore':
+        this.ttsMore = !this.ttsMore;
+        return this.#paintTtsPanel();
+      case 'ttsFollow':
+        setSetting('readFollow', !this.settings.readFollow);
+        this.#paintTtsPanel();
+        // Following again: show where the voice is now.
+        if (this.settings.readFollow && this.aloud && this.lastPiece != null) this.#onPiece(this.lastPiece);
+        return;
+      case 'ttsPick':
+        return this.#setPicking(!this.picking);
       case 'popSpeak': {
         const cur = this.popSound && this.popSound.state;
         if (cur === 'loading') return; // already on its way: extra taps don't queue more
@@ -2064,7 +2081,7 @@ class Reader {
     }
     this.ptr = { id: e.pointerId, x0: p.x, y0: p.y, lx: p.x, ly: p.y, cx0: e.clientX, cy0: e.clientY, t0: performance.now(), zone: forced || this.#zone(p) };
     // Read-aloud mode: a drag that starts on text selects it; anywhere else behaves as usual.
-    if (this.readMode && this.#selectStart(e)) {
+    if (this.readMode && this.#mayPick() && this.#selectStart(e)) {
       this.ptr.selecting = true;
       e.preventDefault();
     }
@@ -2198,7 +2215,11 @@ class Reader {
     if (ptr.moved) this.userMovedAt = performance.now(); // (read-aloud waits a moment before following again)
 
     if (!ptr.drag && !ptr.pan && !ptr.chromeShown && ptr.moved) {
-      if (this.mode === 'single' || this.camera.zoomed) {
+      const swipe = this.#zoomedSwipe(dx, dy);
+      if (swipe) {
+        ptr.drag = { dir: swipe, swipeOnly: true, zoomed: true };
+        this.#closePopup();
+      } else if (this.mode === 'single' || this.camera.zoomed) {
         ptr.pan = { samples: [] };
         this.#closePopup();
       } else if (Math.abs(dx) > MOVE_SLOP || Math.abs(dy) > 40) {
@@ -2235,6 +2256,25 @@ class Reader {
     }
     ptr.lx = p.x;
     ptr.ly = p.y;
+  }
+
+  /**
+   * Landscape, zoomed in: is this the start of a swipe that turns the page (1 next, -1 back)?
+   * Slightly zoomed (up to SWIPE_TURN_ZOOM), a sideways swipe turns the page as when not zoomed;
+   * further in, a sideways swipe turns it once the view is already at that edge of the spread
+   * (the first swipe pans there).
+   */
+  #zoomedSwipe(dx, dy) {
+    const cam = this.camera;
+    if (this.mode !== 'double' || !cam.zoomed || this.busy) return 0;
+    if (Math.abs(dx) < MOVE_SLOP || Math.abs(dx) < Math.abs(dy) * 1.4) return 0;
+    const dir = dx < 0 ? 1 : -1;
+    const target = this.spread + dir;
+    if (target < 0 || target >= this.spreadTotal) return 0;
+    if (cam.s <= SWIPE_TURN_ZOOM) return dir;
+    // (Called as the finger starts moving, before anything has panned.)
+    const edge = cam.clamp(cam.s, cam.tx - dir * 4, cam.ty, true).tx;
+    return Math.abs(edge - cam.tx) < 0.5 ? dir : 0;
   }
 
   #inChromeZone(ptr) {
@@ -2287,6 +2327,11 @@ class Reader {
       return;
     }
     if (ptr.drag) {
+      if (ptr.drag.zoomed) {
+        // Zoomed in: a short or hesitant swipe is not a page turn.
+        const far = Math.abs(ptr.lx - ptr.x0) > Math.min(90, this.W * 0.08);
+        return far && !cancelled ? this.go(this.spread + ptr.drag.dir) : undefined;
+      }
       if (ptr.drag.swipeOnly) return this.go(this.spread + ptr.drag.dir);
       const { turn, samples, dir } = ptr.drag;
       // Fling velocity (px/ms, positive = in the turning direction).
@@ -3076,6 +3121,7 @@ class Reader {
     }
     const lang = this.settings.speechLang === 'auto' ? guessLang(text) : this.settings.speechLang;
     this.aloud = null; // just this passage
+    this.#setPicking(false);
     this.speech.speak(text, lang); // inside the gesture, so mobile browsers allow audio
   }
 
@@ -3161,7 +3207,7 @@ class Reader {
 
   /** A tap on text in read-aloud mode: read from that word on. Returns whether it did. */
   #readFrom(ptr) {
-    if (this.placing || !this.readMode || !this.settings.readContinuous) return false;
+    if (this.placing || !this.readMode || !this.settings.readContinuous || !this.#mayPick()) return false;
     const spans = collectSpans(this.#textLayers());
     const pos = hitTest(spans, ptr.cx0, ptr.cy0, { mode: 'char', maxDist: 14 });
     if (!pos) return false;
@@ -3179,7 +3225,36 @@ class Reader {
     const r = (this.aloud = { page: n, offset: k, segs: [], texts: new Map([[n, shown.text]]) });
     const lang = this.settings.speechLang === 'auto' ? guessLang(shown.text.slice(k, k + 400) || shown.text) : this.settings.speechLang;
     this.speech.speakFeed(() => this.#feedAloud(r), lang); // inside the tap, so mobile browsers allow audio
+    this.#setPicking(false);
     return true;
+  }
+
+  /**
+   * While reading on continuously, touching the text doesn't move the voice (you may be following
+   * along by hand): "Read from another place" in the bar's panel arms the next tap or drag.
+   */
+  #mayPick() {
+    return !this.aloud || this.speech.state === 'idle' || !!this.picking;
+  }
+
+  #setPicking(on) {
+    this.picking = !!on;
+    this.#paintTtsPanel();
+    if (this.readMode && this.speech.state !== 'idle') this.#onSpeechState(this.speech.state); // the bar's words
+  }
+
+  /** The read-aloud bar's panel (continuous reading): shown or not, and its controls' states. */
+  #paintTtsPanel() {
+    const bar = this.el.querySelector('.tts-bar');
+    const cont = !!this.aloud && bar.dataset.state !== 'ready';
+    bar.classList.toggle('cont', cont);
+    const panel = bar.querySelector('.tts-panel');
+    panel.hidden = !(cont && this.ttsMore);
+    bar.querySelector('[data-act="ttsMore"]').setAttribute('aria-expanded', String(!panel.hidden));
+    panel.querySelector('[data-act="ttsFollow"]').setAttribute('aria-checked', String(this.settings.readFollow !== false));
+    const pick = panel.querySelector('[data-act="ttsPick"]');
+    pick.setAttribute('aria-pressed', String(!!this.picking));
+    pick.textContent = this.picking ? 'Cancel' : 'Read from another place';
   }
 
   /** A sentence starts: show its page (turning pages as needed) and highlight it. */
@@ -3193,6 +3268,11 @@ class Reader {
     // Off screen (locked, or another app in front): nothing to show now; caught up on return.
     if (document.hidden) return;
     const n = seg.parts[0].page;
+    if (this.settings.readFollow === false) {
+      // Following by hand: just mark the sentence where it is.
+      this.#markPiece({ piece: i, seg, page: n, started: performance.now(), rects: null, kept: true });
+      return;
+    }
     if (this.mode === 'double') {
       // A page turn still under way finishes first; then the spread with this sentence.
       for (let t = 0; t < 40 && this.busy && token === this.pieceToken; t++) await new Promise((res) => setTimeout(res, 80));
@@ -3278,6 +3358,7 @@ class Reader {
       f.goalTy = null;
     };
     if (!c || document.hidden || this.busy || c.turning || cam.raf || now - (this.userMovedAt || 0) < 4000) return rest();
+    if (this.settings.readFollow === false) return rest(); // following by hand
     const frac = this.speech.progress();
     if (frac == null) {
       // A voice that can't say how far it is: bring the sentence into view once.
@@ -3448,6 +3529,8 @@ class Reader {
       bar.querySelector('.tts-label').textContent = on ? 'Tap where to start reading' : 'Drag across a passage';
       bar.querySelector('[data-act="ttsMode"]').setAttribute('aria-checked', String(on));
       this.aloud = null;
+      this.picking = false;
+      this.#paintTtsPanel();
       this.#keepAwake(false);
       return;
     }
@@ -3462,6 +3545,11 @@ class Reader {
     const other = this.speech.fellBack ? (this.speech.usingFallback ? ' · device voice' : ' · Google voice') : '';
     const label = bar.querySelector('.tts-label');
     clearTimeout(this.ttsSlowTimer);
+    this.#paintTtsPanel();
+    if (this.picking) {
+      label.textContent = 'Tap a word to read from, or drag across a passage';
+      return;
+    }
     if (state === 'loading') {
       // Taking a while (a weak signal, a busy voice service): keep saying what is happening.
       label.textContent = (navigator.onLine === false ? 'No connection · trying the device voice…' : 'Getting the voice ready…') + other;

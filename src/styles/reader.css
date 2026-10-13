@@ -772,6 +772,80 @@
 .tts-close:hover {
   background: rgba(255, 255, 255, 0.08);
 }
+/* Continuous reading: a small chevron opens a panel below the bar (following on/off, read from another place). */
+.tts-more {
+  display: none;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 42px;
+  padding: 0;
+  line-height: 0;
+  border-radius: 15px;
+  color: rgba(239, 232, 220, 0.75);
+}
+.tts-more svg {
+  display: block;
+  margin: 0 auto;
+  width: 16px;
+  height: 16px;
+  transform: rotate(90deg);
+  transition: transform 0.2s ease;
+}
+.tts-more[aria-expanded='true'] svg {
+  transform: rotate(-90deg);
+}
+.tts-bar.cont .tts-more {
+  display: block;
+}
+.tts-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 22px;
+  background: var(--chrome-bg);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  animation: tts-panel-in 0.2s ease;
+}
+.tts-panel[hidden] {
+  display: none;
+}
+@keyframes tts-panel-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+}
+.reader.toolbar-top .tts-panel {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+.tts-bar .tts-panel > .tts-mode {
+  display: inline-flex;
+}
+.tts-pick {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(239, 232, 220, 0.9);
+  font-size: 0.82rem;
+  font-weight: 560;
+}
+.tts-pick[aria-pressed='true'] {
+  background: #d2a26c;
+  color: #1f1b16;
+}
+.no-flexgap .tts-panel > * + * {
+  margin-left: 10px;
+}
 .tts-wave {
   flex: 0 0 auto;
   display: flex;
@@ -1138,6 +1212,9 @@
 .no-flexgap .ts-track > * + *,
 .no-flexgap .pop-main > * + * {
   margin-left: 12px;
+}
+.no-flexgap .tts-bar > .tts-panel {
+  margin-left: 0;
 }
 .no-flexgap .tts-wave > * + * {
   margin-left: 3px;
