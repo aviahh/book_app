@@ -318,8 +318,8 @@ class Reader {
       isReading: () => !!this.readMode,
       reflowable: this.reflowable,
       kind: this.kind,
-      comicMode: () => ({ rtl: this.rtl, view: this.webtoon ? 'scroll' : 'pages' }),
-      setComicMode: (patch) => this.onComic && this.onComic(patch),
+      comicMode: () => ({ rtl: this.rtl, bubblesRtl: this.#bubblesRtl(), view: this.webtoon ? 'scroll' : 'pages' }),
+      setComicMode: (patch) => (patch.bubbles ? this.#setBubbleOrder(patch.bubbles) : this.onComic && this.onComic(patch)),
       toolbar: (act) => {
         const btn = this.el.querySelector(`[data-act="${act}"]`);
         if (act === 'goto' || act === 'thumbs') this.#showChrome();
@@ -2740,6 +2740,25 @@ class Reader {
     await Promise.all(layers.map((tl) => page.buildTextLayer(tl, tl.clientWidth || this.pw)));
   }
 
+  /** Whether this comic's bubbles are read right to left: its own choice, else the way its pages turn. */
+  #bubblesRtl() {
+    const b = this.book.comic && this.book.comic.bubbles;
+    return b ? b === 'rtl' : this.rtl;
+  }
+
+  /** Read the bubbles the other way: kept for the book, and the pages already read put in that order. */
+  async #setBubbleOrder(v) {
+    this.book.comic = Object.assign({}, this.book.comic, { bubbles: v === 'rtl' ? 'rtl' : 'ltr' });
+    updateBook(this.book.id, { comic: this.book.comic });
+    const { inReadingOrder } = await import('../comic/ocr.js');
+    for (const [n, e] of this.doc.ocr) {
+      if (!e.whole) continue;
+      const o = (this.ocrOrder && this.ocrOrder.get(n)) || {};
+      this.doc.setPageText(n, inReadingOrder(e.bubbles.slice(), this.#bubblesRtl(), o.panels, o.geo));
+      this.#refreshOcrLayers(n);
+    }
+  }
+
   /** The language the bubbles of this comic are read in. */
   #ocrLang() {
     return (this.book.comic && this.book.comic.ocr) || 'en';
@@ -2772,7 +2791,7 @@ class Reader {
     note(this.ocrReady ? 'Finding the words on the page…' : 'Getting text recognition ready…');
     let list;
     try {
-      list = await readPage(src.img, { sx: src.sx, sw: src.sw, lang: this.#ocrLang(), rtl: this.rtl, names: this.doc.names || (this.doc.names = new Map()) }, (done, total) => total && note(`Reading the bubbles… ${done} of ${total}`));
+      list = await readPage(src.img, { sx: src.sx, sw: src.sw, lang: this.#ocrLang(), rtl: this.#bubblesRtl(), names: this.doc.names || (this.doc.names = new Map()) }, (done, total) => total && note(`Reading the bubbles… ${done} of ${total}`));
       this.ocrReady = true;
     } catch (e) {
       console.warn('text recognition', e);
@@ -2780,9 +2799,10 @@ class Reader {
       return;
     }
     (this.panels || (this.panels = new Map())).set(n, list.panels || []);
+    (this.ocrOrder || (this.ocrOrder = new Map())).set(n, { panels: list.panels, geo: list.geo });
     // Bubbles read by pressing on them that the page search missed stay too.
     const before = ((this.doc.ocr.get(n) || {}).bubbles || []).filter((b) => !list.some((x) => this.#overlaps(x.box, b.box)));
-    this.doc.setPageText(n, inReadingOrder(list.concat(before), this.rtl, list.panels, list.geo));
+    this.doc.setPageText(n, inReadingOrder(list.concat(before), this.#bubblesRtl(), list.panels, list.geo));
     await this.#refreshOcrLayers(n);
     if (this.readMode) this.#onSpeechState(this.speech.state); // the bar's own words again
   }

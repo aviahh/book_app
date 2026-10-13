@@ -171,6 +171,7 @@ const OCR_LANGS = ['en', 'ja', 'ja-v'];
 function comicValue(c) {
   const v = { rtl: !!c.rtl, view: c.view === 'scroll' ? 'scroll' : 'pages' };
   if (OCR_LANGS.indexOf(c.ocr) >= 0) v.ocr = c.ocr;
+  if (c.bubbles === 'rtl' || c.bubbles === 'ltr') v.bubbles = c.bubbles;
   return v;
 }
 

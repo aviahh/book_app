@@ -477,6 +477,10 @@ export class ReaderTools {
         <div class="tx-chips" role="radiogroup">${chip('rtl', '0', 'Left to right<small>comics</small>', !m.rtl)}${chip('rtl', '1', 'Right to left<small>manga</small>', m.rtl)}</div>
       </div>
       <div class="tx-row">
+        <span class="tx-label">Bubbles read</span>
+        <div class="tx-chips" role="radiogroup">${chip('bubbles', 'ltr', 'Left to right', !m.bubblesRtl)}${chip('bubbles', 'rtl', 'Right to left<small>manga</small>', m.bubblesRtl)}</div>
+      </div>
+      <div class="tx-row">
         <span class="tx-label">Show as</span>
         <div class="tx-chips" role="radiogroup">${chip('view', 'pages', 'Pages<small>turn like a book</small>', m.view !== 'scroll')}${chip('view', 'scroll', 'Scroll<small>webtoons</small>', m.view === 'scroll')}</div>
       </div>
@@ -485,7 +489,8 @@ export class ReaderTools {
       const c = e.target.closest('[data-key]');
       if (!c || c.getAttribute('aria-checked') === 'true') return;
       for (const b of body.querySelectorAll(`[data-key="${c.dataset.key}"]`)) b.setAttribute('aria-checked', b === c);
-      this.api.setComicMode(c.dataset.key === 'rtl' ? { rtl: c.dataset.val === '1' } : { view: c.dataset.val });
+      const key = c.dataset.key;
+      this.api.setComicMode(key === 'rtl' ? { rtl: c.dataset.val === '1' } : key === 'bubbles' ? { bubbles: c.dataset.val } : { view: c.dataset.val });
     };
   }
 
