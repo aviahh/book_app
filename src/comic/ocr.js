@@ -861,7 +861,7 @@ export function wordLike(r, lang) {
   const digits = text.replace(/[^\p{N}]/gu, '').length;
   if (letters < 2 || signs > Math.max(1, letters * 0.15)) return false;
   if (digits > letters) return false;
-  const sure = words.filter((w) => (w.conf == null ? 100 : w.conf) >= 60).length;
+  const sure = words.filter((w) => (w.conf == null ? 100 : w.conf) >= (said(w.text.replace(/[^A-Za-z]/g, '').toLowerCase()) ? 30 : 60)).length; // (drawn-out sounds read less surely)
   if (r.confidence < 50 || sure < words.length * 0.5) return false;
   if (lang === 'en') {
     // Real lettering has words of several letters, with vowels.
@@ -1054,7 +1054,7 @@ async function readBest(img, a, sx, b, lang) {
   const most = Math.max(...tries.filter((r) => wordLike(r, lang)).map((r) => r.text.replace(/[^A-Za-z]/g, '').length), 1);
   const score = (r) => readingScore(r, lang) * Math.min(1, r.text.replace(/[^A-Za-z]/g, '').length / most);
   const pick = tries.reduce((p, q) => (score(q) > score(p) ? q : p));
-  if (debug.trace) debug.trace.push({ tries: tries.map((r) => [r.text, Math.round(r.confidence), Math.round(score(r))]), box: [first.box.x, first.box.y, first.box.x + first.box.w, first.box.y + first.box.h] });
+  if (debug.trace) debug.trace.push({ tries: tries.map((r) => [r.text, Math.round(r.confidence), Math.round(score(r)), wordLike(r, lang), r.lines.map((l) => l.words.map((w) => Math.round(w.conf)).join(',')).join('/')]), box: [first.box.x, first.box.y, first.box.x + first.box.w, first.box.y + first.box.h] });
   return pick;
 }
 
@@ -1072,7 +1072,7 @@ function readingScore(r, lang) {
 
 /** A sound people make, letters drawn out: "Waaaah", "Ahhh", "Hmmm", "Eek", "Eyyyaah". */
 export function said(bare) {
-  return /^(?:w+a+h*|a+h+|o+h+|u+h+|e+h+|h+m+|m+|u+m+|e+e+k+|g+a+h+|n+o+|y+a+y+|e*y+a+h*|a+w+|o+w+|w+o+w+|h+u+h+|w+h+o+a+)$/.test(bare);
+  return /^(?:w+a+h*|a+h+|o+h+|u+h+|e+h+|h+m+|m+|u+m+|e+e+k+|g+a+h+|n+o+|y+a+y+|e*y+a+h*|e+y+|a+w+|o+w+|w+o+w+|h+u+h+|w+h+o+a+)$/.test(bare);
 }
 
 /**
@@ -1288,7 +1288,7 @@ export function tidyWords(lines, lang) {
     let t = w.text.replace(/[|]/g, 'I');
     if (/[A-Za-z]/.test(t)) {
       // (No look-behind in these patterns: older Safari doesn't know it.)
-      t = t.replace(/^1(?=[a-z]{1,3}\b)/, 'i').replace(/^1(?=[A-Z]{1,3}\b)/, 'I').replace(/([A-Za-z])0(?=[A-Za-z])/g, '$1o').replace(/([A-Za-z])1(?=[A-Za-z])/g, '$1l').replace(/([A-Za-z])5(?=[A-Za-z])/g, '$1s');
+      t = t.replace(/^1(?=[a-z]{1,3}\b)/, 'i').replace(/^1(?=[A-Z]{1,3}\b)/, 'I').replace(/([A-Za-z])0(?=[A-Za-z])/g, '$1o').replace(/([A-Za-z])1(?=[A-Za-z])/g, '$1l').replace(/([A-Za-z])5(?=[A-Za-z])/g, '$1s').replace(/([A-Za-z])4+(?=[A-Za-z])/g, (m, c) => c + 'a'.repeat(m.length - 1));
     } else if (/^[17]([.,!?…'’"”]*)$/.test(t) && numbers <= 1 && all.length > 2) {
       t = 'I' + t.slice(1);
     }
