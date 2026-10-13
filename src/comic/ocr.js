@@ -915,7 +915,7 @@ function otsu(hist, total) {
 async function readBubble(img, a, sx, b, lang) {
   if (lang === 'en' && b.rows) {
     const lh = letterHeight(a.g, a.w, b);
-    const groups = letterGroups(a.g, a.w, b, lh);
+    const groups = b.groups || letterGroups(a.g, a.w, b, lh);
     if (debug.trace) debug.trace.push({ bubble: [b.x0, b.y0, b.x1, b.y1].map((v) => v / a.k), lh: lh / a.k, groups: groups.map((g) => [g.x0, g.y0, g.x1, g.y1].map((v) => v / a.k)), fits: groups.map((g) => { const f = lineFit(g); return f ? [+f.angle.toFixed(2), f.stray, g.ms.length] : g.ms && g.ms.length; }) });
     if (!groups.length) return []; // no letters in it (a face, the sky)
     if (groups.length > 1) {
@@ -1305,7 +1305,7 @@ function fixName(text) {
   const m = /^([^A-Za-z]*)([A-Za-z/|!1]+)([^A-Za-z]*)$/.exec(text);
   if (!m) return text;
   const bare = m[2].replace(/[^A-Za-z]/g, '').toLowerCase();
-  if (bare.length < 3 || dict.has(bare) || said(bare) || bookNames.has(bare)) return text;
+  if (bare.length < 4 || dict.has(bare) || said(bare) || bookNames.has(bare)) return text;
   let best = null;
   for (const [name, n] of bookNames) {
     if (n < 2 || Math.abs(name.length - m[2].length) > 2) continue;
@@ -1319,7 +1319,7 @@ function fixName(text) {
 
 // What the engine takes for what, in comic lettering.
 // (Only shapes that really look alike: a name such as "Roxy" mustn't become "foxy".)
-const CONFUSED = [['c', 'e'], ['e', 'c'], ['1', 'l'], ['1', 'i'], ['l', 'i'], ['i', 'l'], ['0', 'o'], ['rn', 'm'], ['m', 'rn'], ['vv', 'w'], ['ii', 'u'], ['cl', 'd'], ['li', 'h'], ['5', 's'], ['8', 'b']];
+const CONFUSED = [['c', 'e'], ['e', 'c'], ['1', 'l'], ['1', 'i'], ['l', 'i'], ['i', 'l'], ['0', 'o'], ['rn', 'm'], ['m', 'rn'], ['vv', 'w'], ['ii', 'u'], ['cl', 'd'], ['li', 'h'], ['5', 's'], ['8', 'b'], ['v', 'y']];
 
 /** A word as read, put right if it isn't a word and a likely confusion of a common one is. */
 export function fixWord(text) {
@@ -1496,11 +1496,15 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
       // Lettering outside them, about the size of the bubbles' own.
       const sizes = found.map((b) => letterHeight(a.g, a.w, b)).filter(Boolean).sort((p, q) => p - q);
       const lh = sizes.length ? sizes[sizes.length >> 1] : 12;
-      const loose = looseGroups(a.g, a.w, a.h, found, lh);
+      // (Light areas without letters, such as the letters of a white caption themselves, don't hide
+      // lettering found there.)
+      if (found.length) for (const b of found) b.groups = letterGroups(a.g, a.w, b, letterHeight(a.g, a.w, b));
+      const holding = found.filter((b) => b.groups.length);
+      const loose = looseGroups(a.g, a.w, a.h, holding, lh);
       // And light lettering on dark (a caption on a black panel): the same, the picture inverted.
       const inv = new Uint8Array(a.g.length);
       for (let i = 0; i < inv.length; i++) inv[i] = 255 - a.g[i];
-      for (const g of looseGroups(inv, a.w, a.h, found, lh, 0.45)) loose.push(Object.assign(g, { invert: true })); // (dark grounds are often hatched)
+      for (const g of looseGroups(inv, a.w, a.h, holding, lh, 0.45)) loose.push(Object.assign(g, { invert: true })); // (dark grounds are often hatched)
       found.push(...loose);
     }
     const out = [];
@@ -1551,7 +1555,7 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
 async function sparseText(img, sx, sw, lh, taken) {
   const ih = img.naturalHeight || img.height;
   // (Only finding where words are: smaller letters do, and the engine is much quicker on a smaller page.)
-  const scale = Math.max(0.3, Math.min(0.8, 24 / Math.max(8, lh)));
+  const scale = Math.max(0.3, Math.min(1, 30 / Math.max(8, lh)));
   const c = document.createElement('canvas');
   c.width = Math.round(sw * scale);
   c.height = Math.round(ih * scale);
