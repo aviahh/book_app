@@ -915,17 +915,51 @@ async function readBubble(img, a, sx, b, lang) {
     if (groups.length > 1) {
       const pad = Math.max(3, Math.round((lh || 12) * 0.8));
       const out = [];
-      for (const g of groups) out.push(await readGroup(img, a, sx, b, g, pad, lang));
+      for (const g of groups) out.push(await lineByLine(img, a, sx, b, g, lang, await readGroup(img, a, sx, b, g, pad, lang)));
       return out;
     }
     if (groups.length === 1 && stacked(groups[0])) return [await readGroup(img, a, sx, b, groups[0], 0, lang)];
     // One group: the whole bubble is read; its letters alone, set level, as another try.
     if (groups.length === 1) {
       const alt = within(b, groups[0], Math.max(3, Math.round(groups[0].letterSize * 0.8)), a.w).alt;
-      if (alt) return [await readBest(img, a, sx, Object.assign({}, b, { alt }), lang)];
+      const r = await readBest(img, a, sx, alt ? Object.assign({}, b, { alt }) : b, lang);
+      return [await lineByLine(img, a, sx, b, groups[0], lang, r)];
     }
   }
   return [await readBest(img, a, sx, b, lang)];
+}
+
+/**
+ * The engine sometimes leaves a line out (a big shout above smaller words): when a reading has far
+ * fewer letters than the group has marks, its lines are read one by one, and that kept if better.
+ */
+async function lineByLine(img, a, sx, b, g, lang, r) {
+  const marks = (g.ms || []).filter((m) => m.y1 - m.y0 + 1 >= g.letterSize * 0.6).length;
+  const letters = r.text.replace(/[^A-Za-z]/g, '').length;
+  if (lang !== 'en' || !g.ms || marks < 6) return r;
+  // Rows: marks overlapping in height.
+  const rows = [];
+  for (const m of g.ms.slice().sort((p, q) => p.y0 - q.y0)) {
+    const row = rows.find((w) => Math.min(w.y1, m.y1) - Math.max(w.y0, m.y0) > Math.min(w.y1 - w.y0, m.y1 - m.y0) * 0.4);
+    if (row) Object.assign(row, { y0: Math.min(row.y0, m.y0), y1: Math.max(row.y1, m.y1) }).ms.push(m);
+    else rows.push({ y0: m.y0, y1: m.y1, ms: [m] });
+  }
+  // (Rows of real letters, not a dot or a stray mark: a reading with as many lines is complete.)
+  const real = rows.filter((w) => w.ms.some((m) => m.y1 - m.y0 + 1 >= g.letterSize * 0.6));
+  if (real.length < 2 || real.length > 8 || (r.lines.length >= real.length && letters >= marks * 0.6)) return r;
+  const lines = [];
+  for (const row of rows.sort((p, q) => p.y0 - q.y0)) {
+    const ms = row.ms;
+    const rg = { x0: Math.min(...ms.map((m) => m.x0)), y0: row.y0, x1: Math.max(...ms.map((m) => m.x1)), y1: row.y1, at: [].concat(...ms.map((m) => m.at)), ms, letterSize: g.letterSize };
+    const one = await readRegion(img, a, sx, within(b, rg, Math.max(3, Math.round(g.letterSize * 0.6)), a.w), lang, 40, '7');
+    for (const l of one.lines) lines.push(l);
+  }
+  if (!lines.length) return r;
+  const text = lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ').replace(/(\w)- (\w)/g, '$1$2').trim();
+  const all = lines.reduce((n, l) => n.concat(l.words), []);
+  const each = { lines, text, box: r.box, confidence: all.reduce((n, w) => n + w.conf, 0) / all.length };
+  if (debug.trace) debug.trace.push({ box: [r.box.x, r.box.y, r.box.x + r.box.w, r.box.y + r.box.h], byLine: [r.text, each.text, wordLike(each, lang), Math.round(each.confidence), marks] });
+  return wordLike(each, lang) && each.text.replace(/[^A-Za-z]/g, '').length > letters * 1.3 ? each : r;
 }
 
 /** Read a group of letters: letters stacked one under another as one word, else as usual. */
@@ -1193,7 +1227,7 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja
   if (lang === 'en' && lines.some((l) => l.words.some((w) => w.conf >= 70))) {
     let dropped = false;
     for (const l of lines) {
-      const keep = l.words.filter((w) => w.conf >= 25);
+      const keep = l.words.filter((w) => w.conf >= 25 || (w.conf >= 8 && said(w.text.replace(/[^A-Za-z]/g, '').toLowerCase()))); // (a shout is often read unsurely)
       if (keep.length < l.words.length) (dropped = true), (l.words = keep);
     }
     for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].words.length) lines.splice(i, 1);
