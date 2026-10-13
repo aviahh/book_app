@@ -759,6 +759,42 @@ function looseGroups(gray, w, h, bubbles, lh, paper = 0.6) {
 }
 
 /** The part of region b (a picture w wide) inside group g's box (grown by `pad`), keeping only g's letters. */
+/**
+ * A single line of lettering, tilted or with stray marks beside it (pieces of a jagged outline,
+ * speed lines): the line through its letters' middles, found again without marks well off it.
+ * Returns { angle (radians, 0 when nearly level), size, off(mark), stray (marks left out) }, or null.
+ */
+function lineFit(g) {
+  const ms = g.ms || [];
+  if (ms.length < 3) return null;
+  const hs = ms.map((m) => m.y1 - m.y0 + 1).sort((p, q) => p - q);
+  const mid = hs[hs.length >> 1];
+  const all = ms.filter((m) => m.y1 - m.y0 + 1 >= mid * 0.6);
+  let big = all;
+  for (let round = 0; round < 4 && big.length >= 3; round++) {
+    const xs = big.map((m) => (m.x0 + m.x1) / 2);
+    const ys = big.map((m) => (m.y0 + m.y1) / 2);
+    const n = xs.length;
+    const mx = xs.reduce((s, x) => s + x, 0) / n;
+    const my = ys.reduce((s, y) => s + y, 0) / n;
+    let sxx = 0;
+    let sxy = 0;
+    for (let i = 0; i < n; i++) (sxx += (xs[i] - mx) ** 2), (sxy += (xs[i] - mx) * (ys[i] - my));
+    if (!sxx) return null;
+    const k = sxy / sxx;
+    const off = (m) => Math.abs((m.y0 + m.y1) / 2 - (my + k * ((m.x0 + m.x1) / 2 - mx)));
+    const worst = big.reduce((p, q) => (off(q) > off(p) ? q : p));
+    if (off(worst) <= mid * 0.6) {
+      if (big.length < all.length * 0.6) return null; // several lines, not one
+      const angle = Math.atan(k);
+      if (Math.abs(angle) > 0.7) return null;
+      return { angle: Math.abs(angle) > 0.05 ? angle : 0, size: mid, off, stray: ms.filter((m) => off(m) > mid * 0.75).length };
+    }
+    big = big.filter((m) => m !== worst);
+  }
+  return null;
+}
+
 function within(b, g, pad, w) {
   const x0 = Math.max(b.x0, g.x0 - pad);
   const x1 = Math.min(b.x1, g.x1 + pad);
@@ -770,19 +806,31 @@ function within(b, g, pad, w) {
   // Only the group's own letters (and a little around them, for thin strokes) are read: no art or outline between lobes.
   const bw = x1 - x0 + 1;
   const keep = new Uint8Array(bw * (y1 - y0 + 1));
-  const r = Math.max(2, Math.round(pad / 2));
-  for (const i of g.at) {
-    const gx = i % w;
-    const gy = (i - gx) / w;
-    for (let dy = -r; dy <= r; dy++) {
-      for (let dx = -r; dx <= r; dx++) {
-        const xx = gx + dx - x0;
-        const yy = gy + dy - y0;
-        if (xx >= 0 && yy >= 0 && xx < bw && yy <= y1 - y0) keep[yy * bw + xx] = 1;
+  const r = Math.max(2, Math.round(pad * 0.25)); // (a little round each letter, for its thin strokes)
+  const mark = (into, pixels) => {
+    for (const i of pixels) {
+      const gx = i % w;
+      const gy = (i - gx) / w;
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = gx + dx - x0;
+          const yy = gy + dy - y0;
+          if (xx >= 0 && yy >= 0 && xx < bw && yy <= y1 - y0) into[yy * bw + xx] = 1;
+        }
       }
     }
+  };
+  mark(keep, g.at);
+  const part = { x0, y0, x1, y1, rows, part: true, keep };
+  // A tilted line, or one with stray marks beside it: another way to read it, set level, strays left out
+  // (tried when the plain reading is unsure).
+  const fit = lineFit(g);
+  if (fit && (fit.angle || fit.stray)) {
+    const only = new Uint8Array(keep.length);
+    mark(only, [].concat(...g.ms.filter((m) => fit.off(m) <= fit.size * 0.75).map((m) => m.at)));
+    part.alt = { x0, y0, x1, y1, rows, part: true, keep: only, angle: fit.angle };
   }
-  return { x0, y0, x1, y1, rows, part: true, keep };
+  return part;
 }
 
 // Short things said, that count as words on their own.
@@ -856,7 +904,7 @@ async function readBubble(img, a, sx, b, lang) {
   if (lang === 'en' && b.rows) {
     const lh = letterHeight(a.g, a.w, b);
     const groups = letterGroups(a.g, a.w, b, lh);
-    if (debug.trace) debug.trace.push({ bubble: [b.x0, b.y0, b.x1, b.y1].map((v) => v / a.k), lh: lh / a.k, groups: groups.map((g) => [g.x0, g.y0, g.x1, g.y1].map((v) => v / a.k)) });
+    if (debug.trace) debug.trace.push({ bubble: [b.x0, b.y0, b.x1, b.y1].map((v) => v / a.k), lh: lh / a.k, groups: groups.map((g) => [g.x0, g.y0, g.x1, g.y1].map((v) => v / a.k)), fits: groups.map((g) => { const f = lineFit(g); return f ? [+f.angle.toFixed(2), f.stray, g.ms.length] : g.ms && g.ms.length; }) });
     if (!groups.length) return []; // no letters in it (a face, the sky)
     if (groups.length > 1) {
       const pad = Math.max(3, Math.round((lh || 12) * 0.8));
@@ -865,6 +913,11 @@ async function readBubble(img, a, sx, b, lang) {
       return out;
     }
     if (groups.length === 1 && stacked(groups[0])) return [await readGroup(img, a, sx, b, groups[0], 0, lang)];
+    // One group: the whole bubble is read; its letters alone, set level, as another try.
+    if (groups.length === 1) {
+      const alt = within(b, groups[0], Math.max(3, Math.round(groups[0].letterSize * 0.8)), a.w).alt;
+      if (alt) return [await readBest(img, a, sx, Object.assign({}, b, { alt }), lang)];
+    }
   }
   return [await readBest(img, a, sx, b, lang)];
 }
@@ -976,12 +1029,21 @@ async function readStack(img, a, sx, g, glyphs, lang) {
 async function readBest(img, a, sx, b, lang) {
   const first = await readRegion(img, a, sx, b, lang, 34);
   const words = first.lines.reduce((n, l) => n.concat(l.words), []);
-  if (lang !== 'en' || (first.confidence >= 85 && words.every((w) => w.conf >= 70)) || !words.length) return first;
+  if (lang !== 'en' || (first.confidence >= 85 && words.every((w) => w.conf >= 70))) return first;
+  const tries = [first];
+  // A tilted line (a shout), or one with bits of outline beside it: set level, just its letters.
+  if (b.alt) {
+    tries.push(await readRegion(img, a, sx, b.alt, lang, 34));
+    tries.push(await readRegion(img, a, sx, b.alt, lang, 50, '7'));
+  }
   // (Nothing like words at all: a picture, not worth a second look.)
-  if (first.confidence < 40 || first.text.replace(/[^A-Za-z]/g, '').length < 2) return first;
-  // Bigger letters; and a line or two read as one line, which suits short exclamations.
-  const tries = [first, await readRegion(img, a, sx, b, lang, 50)];
-  if (first.lines.length <= 2) tries.push(await readRegion(img, a, sx, b, lang, 50, '7'));
+  const hopeless = !words.length || first.confidence < 40 || first.text.replace(/[^A-Za-z]/g, '').length < 2;
+  if (!hopeless) {
+    // Bigger letters; and a line or two read as one line, which suits short exclamations.
+    tries.push(await readRegion(img, a, sx, b, lang, 50));
+    if (first.lines.length <= 2) tries.push(await readRegion(img, a, sx, b, lang, 50, '7'));
+  }
+  if (tries.length === 1) return first;
   // (A reading that leaves words out isn't better for being sure of the rest.)
   const most = Math.max(...tries.map((r) => r.text.replace(/[^A-Za-z]/g, '').length), 1);
   const score = (r) => readingScore(r, lang) * Math.min(1, r.text.replace(/[^A-Za-z]/g, '').length / most);
@@ -1066,6 +1128,20 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja
     px[j + 3] = 255;
   }
   ctx.putImageData(d, 0, 0);
+  // Tilted lettering is set level first (the engine reads level lines).
+  let page = c;
+  const angle = b.angle || 0;
+  if (angle) {
+    page = document.createElement('canvas');
+    page.width = cw;
+    page.height = ch;
+    const t2 = page.getContext('2d');
+    t2.fillStyle = '#fff';
+    t2.fillRect(0, 0, cw, ch);
+    t2.translate(cw / 2, ch / 2);
+    t2.rotate(-angle);
+    t2.drawImage(c, -cw / 2, -ch / 2);
+  }
   const worker = await workerFor(lang);
   await worker.setParameters({
     tessedit_pageseg_mode: psm,
@@ -1073,10 +1149,24 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja
     user_defined_dpi: '300',
     tessedit_char_blacklist: lang === 'en' ? '|{}[]<>@#$%^&*_=+~`\\' : '',
   });
-  const { data } = await worker.recognize(c, {}, { text: true, blocks: true });
-  const image = debug.images ? c.toDataURL() : undefined;
+  const { data } = await worker.recognize(page, {}, { text: true, blocks: true });
+  const image = debug.images ? page.toDataURL() : undefined;
   c.width = c.height = 0;
-  const back = (bb) => ({ x0: box.x + (bb.x0 - pad) / scale, y0: box.y + (bb.y0 - pad) / scale, x1: box.x + (bb.x1 - pad) / scale, y1: box.y + (bb.y1 - pad) / scale });
+  page.width = page.height = 0;
+  // (From the levelled picture back: a word's middle turned back, its size kept.)
+  const back = (bb) => {
+    let cx = (bb.x0 + bb.x1) / 2;
+    let cy = (bb.y0 + bb.y1) / 2;
+    if (angle) {
+      const dx = cx - cw / 2;
+      const dy = cy - ch / 2;
+      cx = cw / 2 + dx * Math.cos(angle) - dy * Math.sin(angle);
+      cy = ch / 2 + dx * Math.sin(angle) + dy * Math.cos(angle);
+    }
+    const hw = (bb.x1 - bb.x0) / 2;
+    const hh = (bb.y1 - bb.y0) / 2;
+    return { x0: box.x + (cx - hw - pad) / scale, y0: box.y + (cy - hh - pad) / scale, x1: box.x + (cx + hw - pad) / scale, y1: box.y + (cy + hh - pad) / scale };
+  };
   const lines = [];
   for (const bl of data.blocks || []) {
     for (const p of bl.paragraphs || []) {
