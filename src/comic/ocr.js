@@ -56,6 +56,9 @@ function queued(fn) {
 
 // ---------------------------------------------------------------- finding bubbles
 
+// For testing: keep the picture each region was read from (res.image).
+export const debug = { images: false, trace: null };
+
 const LIGHT = 200;
 const DARK = 120;
 const ERODE = 1; // how narrow a gap in a bubble's outline a fill can't pass (analysis pixels, each side)
@@ -197,9 +200,10 @@ export function findBubbles(gray, w, h, pass = passable(gray, w, h, ERODE)) {
       b.sizes = sizes;
       const bw = b.x1 - b.x0 + 1;
       const bh = b.y1 - b.y0 + 1;
-      if (b.x0 <= 1 || b.y0 <= 1 || b.x1 >= w - 2 || b.y1 >= h - 2) continue; // the page's margin, not a bubble
+      // The page's margin, not a bubble (a bubble cut off by the page's edge is much smaller).
+      if ((b.x0 <= 1 || b.y0 <= 1 || b.x1 >= w - 2 || b.y1 >= h - 2) && b.n > w * h * 0.04) continue;
       if (b.n < w * h * 0.0012 || bw < w * 0.035 || bh < h * 0.02) continue;
-      if (b.n / (bw * bh) < 0.35) continue; // a long thin gap in the art
+      if (b.n / (bw * bh) < 0.25) continue; // a long thin gap in the art
       const ink = inkShare(gray, w, b);
       if (ink < 0.005 || ink > 0.55) continue; // no letters in it (a face, the sky), or mostly drawing
       out.push(b);
@@ -311,6 +315,188 @@ function letterHeight(gray, w, b) {
 }
 
 /**
+ * The lobes of a bubble: bubbles drawn joined (two or three ovals overlapping)
+ * meet at notches in the outline, where it turns sharply inwards. A lobe is
+ * cut off along a short line between two such notches, when that leaves two
+ * good-sized parts and the line is short beside them (a cloud's bumps, a
+ * tail's base, are left alone). Returns a lobe number per pixel of the
+ * bubble's box (0 outside it, or on a cut).
+ */
+export function lobesOf(b, w, gray) {
+  const bw = b.x1 - b.x0 + 1;
+  const bh = b.y1 - b.y0 + 1;
+  const N = bw * bh;
+  // The bubble's paper, with the light edge the fill kept off (next to letters and the outline) given back,
+  // so a letter close to the outline is still inside.
+  const reg = new Uint8Array(N);
+  for (let j = 0; j < N; j++) reg[j] = b.label[(b.y0 + ((j / bw) | 0)) * w + b.x0 + (j % bw)] === b.id ? 1 : 0;
+  if (gray) {
+    for (let k = 0; k <= ERODE; k++) {
+      const grow = reg.slice();
+      for (let y = 0; y < bh; y++) {
+        for (let x = 0; x < bw; x++) {
+          const j = y * bw + x;
+          if (reg[j] || gray[(b.y0 + y) * w + b.x0 + x] < LIGHT) continue;
+          if ((x > 0 && reg[j - 1]) || (x < bw - 1 && reg[j + 1]) || (y > 0 && reg[j - bw]) || (y < bh - 1 && reg[j + bw])) grow[j] = 1;
+        }
+      }
+      reg.set(grow);
+    }
+  }
+  const ours = (j) => reg[j] === 1;
+  // The bubble filled: what isn't reached from the box's edge without crossing it (its letters are inside).
+  const fill = new Uint8Array(N).fill(1);
+  const stack = [];
+  const seed = (j) => {
+    if (fill[j] && !ours(j)) (fill[j] = 0), stack.push(j);
+  };
+  for (let x = 0; x < bw; x++) seed(x), seed((bh - 1) * bw + x);
+  for (let y = 0; y < bh; y++) seed(y * bw), seed(y * bw + bw - 1);
+  while (stack.length) {
+    const j = stack.pop();
+    const x = j % bw;
+    if (x > 0) seed(j - 1);
+    if (x < bw - 1) seed(j + 1);
+    if (j >= bw) seed(j - bw);
+    if (j < N - bw) seed(j + bw);
+  }
+  let area = 0;
+  for (let j = 0; j < N; j++) area += fill[j];
+  // How much of a square around each outline point is bubble: about half on a straight stretch, more in a notch.
+  const S = new Int32Array((bw + 1) * (bh + 1));
+  for (let y = 0; y < bh; y++) {
+    let row = 0;
+    for (let x = 0; x < bw; x++) {
+      row += fill[y * bw + x];
+      S[(y + 1) * (bw + 1) + x + 1] = S[y * (bw + 1) + x + 1] + row;
+    }
+  }
+  // How much of a square around each outline point is bubble: about half on a straight stretch, more in a
+  // notch. Looked at on two scales: the notches between small bubbles are small.
+  const notches = [];
+  let R = 0;
+  for (const k of [0.05, 0.09]) {
+    R = Math.max(3, Math.round(Math.sqrt(area) * k));
+    const share = (x, y) => {
+      const x0 = Math.max(0, x - R);
+      const y0 = Math.max(0, y - R);
+      const x1 = Math.min(bw, x + R + 1);
+      const y1 = Math.min(bh, y + R + 1);
+      const n = S[y1 * (bw + 1) + x1] - S[y0 * (bw + 1) + x1] - S[y1 * (bw + 1) + x0] + S[y0 * (bw + 1) + x0];
+      return n / ((2 * R + 1) * (2 * R + 1));
+    };
+    const edge = [];
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        const j = y * bw + x;
+        if (!fill[j]) continue;
+        if (x === 0 || y === 0 || x === bw - 1 || y === bh - 1 || !fill[j - 1] || !fill[j + 1] || !fill[j - bw] || !fill[j + bw]) {
+          const c = share(x, y);
+          if (c >= 0.64) edge.push({ x, y, c });
+        }
+      }
+    }
+    // The deepest point of each notch.
+    edge.sort((p, q) => q.c - p.c);
+    for (const e of edge) if (!notches.some((n) => Math.abs(n.x - e.x) <= R * 1.5 && Math.abs(n.y - e.y) <= R * 1.5)) notches.push(e);
+  }
+  R = Math.max(3, Math.round(Math.sqrt(area) * 0.05));
+  const cut = new Uint8Array(N);
+  const parts = () => {
+    const lab = new Int32Array(N);
+    const sizes = [0];
+    for (let j0 = 0; j0 < N; j0++) {
+      if (!fill[j0] || cut[j0] || lab[j0]) continue;
+      const id = sizes.length;
+      let n = 0;
+      lab[j0] = id;
+      stack.push(j0);
+      while (stack.length) {
+        const j = stack.pop();
+        n++;
+        const x = j % bw;
+        for (const k of [x > 0 ? j - 1 : -1, x < bw - 1 ? j + 1 : -1, j - bw, j + bw]) {
+          if (k >= 0 && k < N && fill[k] && !cut[k] && !lab[k]) (lab[k] = id), stack.push(k);
+        }
+      }
+      sizes.push(n);
+    }
+    return { lab, sizes };
+  };
+  const line = (p, q, f) => {
+    const steps = Math.ceil(Math.hypot(q.x - p.x, q.y - p.y) * 1.5);
+    for (let t = 0; t <= steps; t++) {
+      const x = Math.round(p.x + ((q.x - p.x) * t) / steps);
+      const y = Math.round(p.y + ((q.y - p.y) * t) / steps);
+      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1]]) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < bw && yy < bh) f(yy * bw + xx);
+      }
+    }
+  };
+  // Shortest cuts first.
+  const pairs = [];
+  for (let a = 0; a < notches.length && a < 16; a++) {
+    for (let c = a + 1; c < notches.length && c < 16; c++) {
+      const len = Math.hypot(notches[a].x - notches[c].x, notches[a].y - notches[c].y);
+      if (len > R * 2) pairs.push({ p: notches[a], q: notches[c], len });
+    }
+  }
+  pairs.sort((p, q) => p.len - q.len);
+  let made = 0;
+  for (const pr of pairs) {
+    if (made >= 3) break;
+    // Across the bubble's own paper (not out over the art).
+    let inside = 0;
+    let all = 0;
+    line(pr.p, pr.q, (k) => (all++, (inside += fill[k] ? 1 : 0)));
+    if (inside < all * 0.92) continue;
+    const before = parts();
+    line(pr.p, pr.q, (k) => (cut[k] = 1));
+    const after = parts();
+    // Two parts of good size where there was one, and the cut short beside them.
+    const big = after.sizes.filter((n) => n >= area * 0.06).length;
+    const was = before.sizes.filter((n) => n >= area * 0.06).length;
+    // A neck: the cut much shorter than both parts are wide along it (cutting across a plain
+    // oval, the parts are no wider than the cut).
+    let ok = big > was;
+    if (ok) {
+      const ux = (pr.q.x - pr.p.x) / pr.len;
+      const uy = (pr.q.y - pr.p.y) / pr.len;
+      const mx = (pr.p.x + pr.q.x) / 2;
+      const my = (pr.p.y + pr.q.y) / 2;
+      // The parts on either side of the cut's middle.
+      const side = (sgn) => {
+        const x = Math.round(mx - uy * sgn * 3);
+        const y = Math.round(my + ux * sgn * 3);
+        return x >= 0 && y >= 0 && x < bw && y < bh ? after.lab[y * bw + x] : 0;
+      };
+      const sa = side(1);
+      const sb = side(-1);
+      ok = !!sa && !!sb && sa !== sb && after.sizes[sa] >= area * 0.06 && after.sizes[sb] >= area * 0.06;
+      if (ok) {
+        const span = (id) => {
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (let j = 0; j < N; j++) {
+            if (after.lab[j] !== id) continue;
+            const t = (j % bw) * ux + ((j / bw) | 0) * uy;
+            if (t < lo) lo = t;
+            if (t > hi) hi = t;
+          }
+          return hi - lo;
+        };
+        ok = pr.len < Math.min(span(sa), span(sb)) * 0.8;
+      }
+    }
+    if (ok) made++;
+    else line(pr.p, pr.q, (k) => (cut[k] = 0));
+  }
+  return parts().lab;
+}
+
+/**
  * The groups of letters inside a light region (analysis pixels): marks of about a letter's size,
  * joined while they lie within a letter or so of each other. A bubble of several lobes, each with
  * its own words, has a group per lobe. Returns [{ x0, y0, x1, y1, marks }], biggest first; marks
@@ -366,11 +552,33 @@ export function letterGroups(gray, w, b, lh) {
       marks.push({ x0, y0, x1, y1, n, at });
     }
   }
-  const size = lh || 12;
+  // The letters' size: the usual height of the marks of letter-like size (more reliable than the
+  // line height when lines sit close), else the given one.
+  const size = (() => {
+    const hs = marks.filter((m) => m.n >= 4 && m.y1 - m.y0 >= 3 && m.y1 - m.y0 < Math.max(40, (lh || 12) * 3) && m.x1 - m.x0 < Math.max(40, (lh || 12) * 3)).map((m) => m.y1 - m.y0 + 1).sort((p, q) => p - q);
+    return hs.length >= 3 ? hs[hs.length >> 1] : lh || 12;
+  })();
   // In this region: the paper around the mark is this region's (not a neighbouring bubble's within the spans).
   const h = b.label ? b.label.length / w : 0;
+  // A bubble: its lobes (for a bubble drawn joined); each letter is in the lobe holding most of it.
+  const lobe = b.label && b.rows ? lobesOf(b, w, gray) : null;
+  const lobeOf = (m) => {
+    if (!lobe) return 0;
+    const count = new Map();
+    const step = Math.max(1, Math.floor(m.at.length / 9));
+    for (let k = 0; k < m.at.length; k += step) {
+      const i = m.at[k];
+      const x = i % w;
+      const v = lobe[((i - x) / w - b.y0) * (b.x1 - b.x0 + 1) + (x - b.x0)];
+      if (v) count.set(v, (count.get(v) || 0) + 1);
+    }
+    let best = 0;
+    for (const [v, n] of count) if (!best || n > count.get(best)) best = v;
+    return best;
+  };
   const ours = (m) => {
     if (!b.label) return true;
+    if (lobe) return lobeOf(m) > 0; // inside the bubble's outline (its paper may be broken up by tone showing through)
     const mx = (m.x0 + m.x1) >> 1;
     const my = (m.y0 + m.y1) >> 1;
     let n = 0;
@@ -392,58 +600,126 @@ export function letterGroups(gray, w, b, lh) {
     const mh = m.y1 - m.y0 + 1;
     return mh <= size * 2.2 && (mw <= size * 3 || (mw <= size * 9 && mh >= size * 0.5)) && m.n >= 2;
   };
-  const letters = marks.filter((m) => letterLike(m) && ours(m));
-  // Join marks lying close: within about a letter sideways, a line up or down, and (in a bubble)
-  // with only its own paper between them: the lobes of a bubble keep their own words.
-  const gx = size * 1.0;
-  const gy = size * 1.2;
+  // (On the open page only marks of about a letter's height count: specks of tone or hatching, between
+  // them, would join everything up. The dots and commas are still read, from the picture.)
+  const letters = marks.filter((m) => letterLike(m) && ours(m) && (b.label || m.y1 - m.y0 + 1 >= (lh || 12) * 0.45));
+  // Long strokes inside (an outline running into a joined bubble): letters on either side don't group across them.
+  const wall = new Set();
+  // (Long and thin: letters of two lines touching make a big mark too, but not a line.)
+  for (const m of marks) {
+    const mw = m.x1 - m.x0 + 1;
+    const mh = m.y1 - m.y0 + 1;
+    if (!letterLike(m) && Math.max(mw, mh) > size * 4 && m.n < mw * mh * 0.2) for (const i of m.at) wall.add(i);
+  }
+  // With (in a bubble) only its own paper between them: the lobes of a bubble keep their own words.
   const clear = (p, q) => {
     if (!b.label) return true;
     const ax = (p.x0 + p.x1) / 2;
     const ay = (p.y0 + p.y1) / 2;
     const bx = (q.x0 + q.x1) / 2;
     const by = (q.y0 + q.y1) / 2;
-    for (let t = 1; t < 10; t++) {
-      const x = Math.round(ax + ((bx - ax) * t) / 10);
-      const y = Math.round(ay + ((by - ay) * t) / 10);
+    const steps = Math.max(10, Math.ceil(Math.hypot(bx - ax, by - ay)));
+    for (let t = 1; t < steps; t++) {
+      const x = Math.round(ax + ((bx - ax) * t) / steps);
+      const y = Math.round(ay + ((by - ay) * t) / steps);
+      if (wall.has(y * w + x)) return false; // a line of the drawing between
       const v = b.label[y * w + x];
-      if (v && v !== b.id) return false; // another light area lies between
+      if (v && v !== b.id && !(b.sizes && b.sizes[v] < size * size * 1.5)) return false; // another light area lies between (not the inside of a letter)
       if (!v && gray[y * w + x] >= LIGHT && !inside(x, y)) return false; // outside this bubble
     }
     return true;
   };
-  const up = letters.map((_, i) => i);
-  const root = (i) => {
-    while (up[i] !== i) i = up[i] = up[up[i]];
-    return i;
+  const lobes = letters.map(lobeOf);
+  const joined = (items, near) => {
+    const up = items.map((_, k) => k);
+    const root = (k) => {
+      while (up[k] !== k) k = up[k] = up[up[k]];
+      return k;
+    };
+    for (let a = 0; a < items.length; a++) {
+      for (let c = a + 1; c < items.length; c++) {
+        const ra = root(a);
+        const rc = root(c);
+        if (ra !== rc && near(items[a], items[c])) up[ra] = rc;
+      }
+    }
+    const out = new Map();
+    items.forEach((it, k) => {
+      const r = root(k);
+      if (!out.has(r)) out.set(r, []);
+      out.get(r).push(it);
+    });
+    return [...out.values()];
   };
-  const order = letters.map((_, i) => i).sort((p, q) => letters[p].x0 - letters[q].x0);
-  for (let oi = 0; oi < order.length; oi++) {
-    const p = letters[order[oi]];
-    for (let oj = oi + 1; oj < order.length; oj++) {
-      const q = letters[order[oj]];
-      if (q.x0 > p.x1 + gx) break; // (sorted by left edge: none further on can be near)
-      if (q.y0 > p.y1 + gy || p.y0 > q.y1 + gy) continue;
-      const a = root(order[oi]);
-      const c = root(order[oj]);
-      if (a !== c && clear(p, q)) up[a] = c;
+  const boxOf = (ms) => ({ x0: Math.min(...ms.map((m) => m.x0)), y0: Math.min(...ms.map((m) => m.y0)), x1: Math.max(...ms.map((m) => m.x1)), y1: Math.max(...ms.map((m) => m.y1)), ms, lobe: ms[0].lobe });
+  letters.forEach((m, k) => (m.lobe = lobes[k]));
+  // Lines: marks side by side, at the same height, a word space or less apart (word spaces go by the
+  // taller letters: in lower case most marks are short).
+  const tall = (() => {
+    const hs = letters.map((m) => m.y1 - m.y0 + 1).sort((p, q) => p - q);
+    return hs.length ? Math.max(size, hs[Math.floor(hs.length * 0.75)]) : size;
+  })();
+  const lines = joined(letters, (p, q) => {
+    if (p.lobe !== q.lobe) return false;
+    const over = Math.min(p.y1, q.y1) - Math.max(p.y0, q.y0);
+    const cy = Math.abs((p.y0 + p.y1) / 2 - (q.y0 + q.y1) / 2);
+    if (over < Math.min(p.y1 - p.y0, q.y1 - q.y0) * 0.4 && cy > size * 0.5) return false;
+    const gap = Math.max(p.x0, q.x0) - Math.min(p.x1, q.x1);
+    return gap <= tall * 0.9 && clear(p, q);
+  }).map(boxOf);
+  // Blocks: lines one under another (a line's space apart), overlapping sideways. Two remarks
+  // side by side in a bubble, or a box beside a bubble, stay apart.
+  const blocks = joined(lines, (p, q) => {
+    if (p.lobe !== q.lobe) return false;
+    const gapY = Math.max(p.y0, q.y0) - Math.min(p.y1, q.y1);
+    if (gapY > tall * 1.1 || gapY < -tall * 0.3) return false;
+    const over = Math.min(p.x1, q.x1) - Math.max(p.x0, q.x0);
+    const narrow = Math.min(p.x1 - p.x0, q.x1 - q.x0);
+    return over >= narrow * 0.25 && clear(p, q);
+  });
+  // In a bubble, a lobe's letters are one remark; only two stacks of lines side by side, with a
+  // clear gap between them all the way down, are two.
+  const byRoot = new Map();
+  if (lobe) {
+    letters.forEach((m) => {
+      if (!byRoot.has(m.lobe)) byRoot.set(m.lobe, []);
+      byRoot.get(m.lobe).push(m);
+    });
+  } else blocks.forEach((bl, k) => byRoot.set(k, [].concat(...bl.map((l) => l.ms))));
+  const columns = (ms) => {
+    if (!lobe || ms.length < 4) return [ms];
+    const sorted = ms.slice().sort((p, q) => p.x0 - q.x0);
+    let reach = sorted[0].x1;
+    for (let k = 1; k < sorted.length; k++) {
+      if (sorted[k].x0 - reach >= tall * 0.8) {
+        const left = sorted.slice(0, k);
+        const right = sorted.slice(k);
+        const high = (side) => Math.max(...side.map((m) => m.y1)) - Math.min(...side.map((m) => m.y0));
+        if (high(left) >= tall * 1.8 && high(right) >= tall * 1.8) return columns(left).concat(columns(right));
+      }
+      reach = Math.max(reach, sorted[k].x1);
+    }
+    return [ms];
+  };
+  const groups = [];
+  for (const ms of byRoot.values()) {
+    for (const col of columns(ms)) {
+      const g = { x0: col[0].x0, y0: col[0].y0, x1: col[0].x1, y1: col[0].y1, marks: col.length, at: [] };
+      for (const m of col) {
+        g.x0 = Math.min(g.x0, m.x0);
+        g.y0 = Math.min(g.y0, m.y0);
+        g.x1 = Math.max(g.x1, m.x1);
+        g.y1 = Math.max(g.y1, m.y1);
+        for (const k of m.at) g.at.push(k);
+      }
+      // Letters are alike in size: a group of odd marks (hair, a pattern) isn't lettering.
+      const hs = col.map((m) => m.y1 - m.y0 + 1).sort((p, q) => p - q);
+      const mid = hs[hs.length >> 1];
+      g.even = hs.filter((x) => x >= mid * 0.55 && x <= mid * 1.6).length / hs.length;
+      g.letterSize = mid;
+      groups.push(g);
     }
   }
-  const byRoot = new Map();
-  letters.forEach((m, i) => {
-    const r = root(i);
-    const g = byRoot.get(r);
-    if (!g) byRoot.set(r, { x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1, marks: 1, at: m.at.slice() });
-    else {
-      g.x0 = Math.min(g.x0, m.x0);
-      g.y0 = Math.min(g.y0, m.y0);
-      g.x1 = Math.max(g.x1, m.x1);
-      g.y1 = Math.max(g.y1, m.y1);
-      g.marks++;
-      for (const k of m.at) g.at.push(k);
-    }
-  });
-  const groups = [...byRoot.values()];
   return groups.filter((g) => g.marks >= 2).sort((p, q) => q.marks - p.marks);
 }
 
@@ -452,13 +728,13 @@ export function letterGroups(gray, w, b, lh) {
  * whose outline runs into the panel's edge, lettering on the page). Groups in
  * a found bubble, on tone or art, or too long for words are left out.
  */
-function looseGroups(gray, w, h, bubbles, lh) {
+function looseGroups(gray, w, h, bubbles, lh, paper = 0.6) {
   const page = { x0: 0, y0: 0, x1: w - 1, y1: h - 1, rows: null };
   const label = bubbles.length ? bubbles[0].label : null;
   const taken = new Set(bubbles.map((b) => b.id));
   const out = [];
   for (const g of letterGroups(gray, w, page, lh)) {
-    if (g.marks < 3) continue;
+    if (g.marks < 3 || g.even < 0.7 || g.letterSize < lh * 0.5 || g.letterSize > lh * 1.8) continue;
     const gw = g.x1 - g.x0 + 1;
     const gh = g.y1 - g.y0 + 1;
     if (gw > w * 0.4 || gh > h * 0.2) continue;
@@ -474,7 +750,7 @@ function looseGroups(gray, w, h, bubbles, lh) {
         if (label && taken.has(label[y * w + x])) inBubble++;
       }
     }
-    if (light < all * 0.6 || inBubble > all * 0.15) continue;
+    if (light < all * paper || inBubble > all * 0.15) continue;
     out.push({ x0: Math.max(0, g.x0 - m), y0: Math.max(0, g.y0 - m), x1: Math.min(w - 1, g.x1 + m), y1: Math.min(h - 1, g.y1 + m), rows: null });
   }
   return out;
@@ -486,11 +762,9 @@ function within(b, g, pad, w) {
   const x1 = Math.min(b.x1, g.x1 + pad);
   const y0 = Math.max(b.y0, g.y0 - pad);
   const y1 = Math.min(b.y1, g.y1 + pad);
+  // (The whole box: a letter close to the outline can reach past the bubble's paper; `keep` limits it to the letters.)
   const rows = [];
-  for (let y = y0; y <= y1; y++) {
-    const r = b.rows ? b.rows[y - b.y0] : [b.x0, b.x1];
-    rows.push(r && r[1] >= x0 && r[0] <= x1 ? [Math.max(r[0], x0), Math.min(r[1], x1)] : null);
-  }
+  for (let y = y0; y <= y1; y++) rows.push([x0, x1]);
   // Only the group's own letters (and a little around them, for thin strokes) are read: no art or outline between lobes.
   const bw = x1 - x0 + 1;
   const keep = new Uint8Array(bw * (y1 - y0 + 1));
@@ -567,28 +841,46 @@ async function readBubble(img, a, sx, b, lang) {
   if (lang === 'en' && b.rows) {
     const lh = letterHeight(a.g, a.w, b);
     const groups = letterGroups(a.g, a.w, b, lh);
+    if (debug.trace) debug.trace.push({ bubble: [b.x0, b.y0, b.x1, b.y1].map((v) => v / a.k), lh: lh / a.k, groups: groups.map((g) => [g.x0, g.y0, g.x1, g.y1].map((v) => v / a.k)) });
+    if (!groups.length) return []; // no letters in it (a face, the sky)
     if (groups.length > 1) {
       const pad = Math.max(3, Math.round((lh || 12) * 0.8));
       const out = [];
-      for (const g of groups) out.push(await readRegion(img, a, sx, within(b, g, pad, a.w), lang));
+      for (const g of groups) out.push(await readBest(img, a, sx, within(b, g, pad, a.w), lang));
       return out;
     }
   }
-  return [await readRegion(img, a, sx, b, lang)];
+  return [await readBest(img, a, sx, b, lang)];
+}
+
+/**
+ * Read a region at the usual letter size; when the engine isn't sure of some
+ * of it, again with bigger letters (lettering styles differ in which reads
+ * better), keeping the better reading.
+ */
+async function readBest(img, a, sx, b, lang) {
+  const first = await readRegion(img, a, sx, b, lang, 34);
+  const words = first.lines.reduce((n, l) => n.concat(l.words), []);
+  if (lang !== 'en' || (first.confidence >= 85 && words.every((w) => w.conf >= 70)) || !words.length) return first;
+  // (Nothing like words at all: a picture, not worth a second look.)
+  if (first.confidence < 40 || first.text.replace(/[^A-Za-z]/g, '').length < 2) return first;
+  const second = await readRegion(img, a, sx, b, lang, 50);
+  const score = (r) => (wordLike(r, lang) ? 100 : 0) + r.confidence;
+  return score(second) > score(first) ? second : first;
 }
 
 /**
  * Read one region (a bubble with its row spans, or a plain box). Positions
  * come back in picture pixels: { lines: [{ words: [{ text, x0, y0, x1, y1 }] }], text, confidence }.
  */
-async function readRegion(img, a, sx, b, lang) {
+async function readRegion(img, a, sx, b, lang, letterPx = 34) {
   const k = a.k;
   // The outline is left out: the mask is drawn in from the edge by a few per cent.
   const inset = b.rows && !b.part ? Math.max(2, Math.round(Math.min(b.x1 - b.x0, b.y1 - b.y0) * 0.05)) : 0;
   const box = { x: sx + b.x0 / k, y: b.y0 / k, w: (b.x1 - b.x0 + 1) / k, h: (b.y1 - b.y0 + 1) / k };
-  // Letters about 34 px tall are what the engine reads best.
+  // Letters about 34 px tall are what the engine usually reads best.
   const lh = letterHeight(a.g, a.w, b) / k;
-  const scale = lh > 0 ? Math.max(0.6, Math.min(4, 34 / lh)) : Math.max(1, Math.min(4, 1100 / Math.max(box.w, box.h)));
+  const scale = lh > 0 ? Math.max(0.6, Math.min(4, letterPx / lh)) : Math.max(1, Math.min(4, 1100 / Math.max(box.w, box.h)));
   const pad = 24;
   const cw = Math.round(box.w * scale) + 2 * pad;
   const ch = Math.round(box.h * scale) + 2 * pad;
@@ -621,7 +913,8 @@ async function readRegion(img, a, sx, b, lang) {
     for (let x = 0; x < cw; x++) {
       if (x < lo || x > hi) continue;
       const j = (y * cw + x) * 4;
-      const v = (px[j] * 299 + px[j + 1] * 587 + px[j + 2] * 114) / 1000;
+      let v = (px[j] * 299 + px[j + 1] * 587 + px[j + 2] * 114) / 1000;
+      if (b.invert) v = 255 - v; // light letters on a dark ground
       // (A group of a bubble's letters: only near those letters.)
       inside[y * cw + x] = !b.keep || (kr >= 0 && b.keep[kr + Math.floor((x - pad) / f)]) ? 1 : 0;
       hist[v | 0]++;
@@ -645,6 +938,7 @@ async function readRegion(img, a, sx, b, lang) {
     tessedit_char_blacklist: lang === 'en' ? '|{}[]<>@#$%^&*_=+~`\\' : '',
   });
   const { data } = await worker.recognize(c, {}, { text: true, blocks: true });
+  const image = debug.images ? c.toDataURL() : undefined;
   c.width = c.height = 0;
   const back = (bb) => ({ x0: box.x + (bb.x0 - pad) / scale, y0: box.y + (bb.y0 - pad) / scale, x1: box.x + (bb.x1 - pad) / scale, y1: box.y + (bb.y1 - pad) / scale });
   const lines = [];
@@ -661,7 +955,7 @@ async function readRegion(img, a, sx, b, lang) {
   }
   tidyWords(lines, lang);
   const text = lines.map((l) => l.words.map((w) => w.text).join(lang === 'en' ? ' ' : '')).join(lang === 'en' ? ' ' : '');
-  return { lines, text: text.replace(/(\w)- (\w)/g, '$1$2').trim(), box, confidence: data.confidence || 0 };
+  return { lines, text: text.replace(/(\w)- (\w)/g, '$1$2').trim(), box, confidence: data.confidence || 0, image };
 }
 
 // Words that often follow "I" (to tell "ILEFT" from a word that starts with I).
@@ -761,7 +1055,7 @@ export function readAt(img, { sx = 0, sw = img.naturalWidth || img.width, ix, iy
  * All the bubbles of a page, read, in reading order: [{ box, lines, text }].
  * rtl: manga (right to left). onProgress(done, total) as it goes.
  */
-export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang = 'en', rtl = false }, onProgress = () => {}) {
+export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang = 'en', rtl = false, rejected = null }, onProgress = () => {}) {
   return queued(async () => {
     const ih = img.naturalHeight || img.height;
     const a = grayOf(img, sx, 0, sw, ih);
@@ -769,19 +1063,111 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
     if (lang === 'en') {
       // Lettering outside them, about the size of the bubbles' own.
       const sizes = found.map((b) => letterHeight(a.g, a.w, b)).filter(Boolean).sort((p, q) => p - q);
-      found.push(...looseGroups(a.g, a.w, a.h, found, sizes.length ? sizes[sizes.length >> 1] : 12));
+      const lh = sizes.length ? sizes[sizes.length >> 1] : 12;
+      const loose = looseGroups(a.g, a.w, a.h, found, lh);
+      // And light lettering on dark (a caption on a black panel): the same, the picture inverted.
+      const inv = new Uint8Array(a.g.length);
+      for (let i = 0; i < inv.length; i++) inv[i] = 255 - a.g[i];
+      for (const g of looseGroups(inv, a.w, a.h, found, lh, 0.45)) loose.push(Object.assign(g, { invert: true })); // (dark grounds are often hatched)
+      found.push(...loose);
     }
     const out = [];
     for (let i = 0; i < found.length; i++) {
       onProgress(i, found.length);
       for (const r of await readBubble(img, a, sx, found[i], lang)) {
         if (lang === 'en' ? wordLike(r, lang) : r.text.replace(/[^\p{L}]/gu, '').length >= 2 && r.confidence >= 45) out.push(r);
+        else if (rejected) rejected.push(r); // (for testing: what was read and left out)
+      }
+    }
+    // Words on the art itself (narration over a picture, lettering on tone): the engine's own search
+    // over the whole page finds where they are; each place found is then read like a bubble.
+    if (lang === 'en') {
+      const sizes = out.map((r) => r.lines.length && r.lines[0].words.length && r.lines[0].words[0].y1 - r.lines[0].words[0].y0).filter((x) => x > 0).sort((p, q) => p - q);
+      const lh = sizes.length ? sizes[sizes.length >> 1] : 40;
+      for (const box of await sparseText(img, sx, sw, lh, out.map((r) => r.box))) {
+        const k = a.k;
+        const b = { x0: Math.max(0, Math.round((box.x - sx) * k)), y0: Math.max(0, Math.round(box.y * k)), x1: Math.min(a.w - 1, Math.round((box.x - sx + box.w) * k)), y1: Math.min(a.h - 1, Math.round((box.y + box.h) * k)), rows: null };
+        const r = await readBest(img, a, sx, b, lang);
+        if (wordLike(r, lang)) out.push(r);
+        else if (rejected) rejected.push(r);
       }
     }
     onProgress(found.length, found.length);
     // (The panels too: read aloud, the view keeps the panel of the bubble being read in sight.)
     return Object.assign(inReadingOrder(out, rtl), { panels: findPanels(a.g, a.w, a.h) });
   });
+}
+
+/**
+ * Where there are words outside the places already read (`taken`, picture
+ * pixels): the engine looks over the whole page (sparse text), its surer
+ * words are kept and gathered into blocks, given back as boxes to read.
+ */
+async function sparseText(img, sx, sw, lh, taken) {
+  const ih = img.naturalHeight || img.height;
+  const scale = Math.max(0.3, Math.min(1.5, 34 / Math.max(8, lh)));
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * scale);
+  c.height = Math.round(ih * scale);
+  c.getContext('2d').drawImage(img, sx, 0, sw, ih, 0, 0, c.width, c.height);
+  const worker = await workerFor('en');
+  await worker.setParameters({ tessedit_pageseg_mode: '11', user_defined_dpi: '300', tessedit_char_blacklist: '|{}[]<>@#$%^&*_=+~`\\' });
+  const { data } = await worker.recognize(c, {}, { blocks: true });
+  c.width = c.height = 0;
+  const words = [];
+  for (const bl of data.blocks || []) {
+    for (const p of bl.paragraphs || []) {
+      for (const l of p.lines || []) {
+        for (const wd of l.words || []) {
+          const t = (wd.text || '').trim();
+          const letters = t.replace(/[^A-Za-z]/g, '');
+          if (wd.confidence < 65 || letters.length < 2 || !/[aeiouyAEIOUY]/.test(letters)) continue;
+          const box = { x: sx + wd.bbox.x0 / scale, y: wd.bbox.y0 / scale, w: (wd.bbox.x1 - wd.bbox.x0) / scale, h: (wd.bbox.y1 - wd.bbox.y0) / scale };
+          // Not in what was read already.
+          const inside = taken.some((q) => {
+            const ox = Math.min(box.x + box.w, q.x + q.w) - Math.max(box.x, q.x);
+            const oy = Math.min(box.y + box.h, q.y + q.h) - Math.max(box.y, q.y);
+            return ox > 0 && oy > 0 && ox * oy > box.w * box.h * 0.3;
+          });
+          if (!inside && box.h > lh * 0.4 && box.h < lh * 2.5) words.push(Object.assign(box, { conf: wd.confidence, n: letters.length }));
+        }
+      }
+    }
+  }
+  // Blocks: words on a line, and lines one under another.
+  const up = words.map((_, i) => i);
+  const root = (i) => {
+    while (up[i] !== i) i = up[i] = up[up[i]];
+    return i;
+  };
+  for (let i = 0; i < words.length; i++) {
+    for (let j = i + 1; j < words.length; j++) {
+      const p = words[i];
+      const q = words[j];
+      const hh = Math.max(p.h, q.h);
+      const gx = Math.max(p.x, q.x) - Math.min(p.x + p.w, q.x + q.w);
+      const gy = Math.max(p.y, q.y) - Math.min(p.y + p.h, q.y + q.h);
+      if (gx < hh * 1.2 && gy < hh * 0.9) up[root(i)] = root(j);
+    }
+  }
+  const blocks = new Map();
+  words.forEach((wd, i) => {
+    const r = root(i);
+    if (!blocks.has(r)) blocks.set(r, []);
+    blocks.get(r).push(wd);
+  });
+  const out = [];
+  for (const ws of blocks.values()) {
+    // A lone word only when the engine is sure of it.
+    if (ws.length < 2 && !(ws[0].n >= 3 && ws[0].conf >= 80)) continue;
+    const x0 = Math.min(...ws.map((q) => q.x));
+    const y0 = Math.min(...ws.map((q) => q.y));
+    const x1 = Math.max(...ws.map((q) => q.x + q.w));
+    const y1 = Math.max(...ws.map((q) => q.y + q.h));
+    const pad = lh * 0.5;
+    out.push({ x: x0 - pad, y: y0 - pad, w: x1 - x0 + 2 * pad, h: y1 - y0 + 2 * pad });
+  }
+  return out;
 }
 
 /**
@@ -811,3 +1197,4 @@ export function inReadingOrder(list, rtl) {
   }
   return out;
 }
+
