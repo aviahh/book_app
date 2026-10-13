@@ -1011,6 +1011,8 @@ export function fixWord(text) {
   if (!m || !dict) return text;
   const core = m[2];
   const key = core.toLowerCase();
+  // Two letters: only an e read as c ("mc", "wc", "bc").
+  if (key.length === 2 && /c$/.test(key) && !SHORT.has(key) && dict.get(key[0] + 'e') < 300) return m[1] + core[0] + (core[1] === 'C' ? 'E' : 'e') + m[3];
   if (key.length < 3 || dict.has(key) || /^\d+$/.test(key)) return text;
   let best = null;
   let rank = Infinity;
@@ -1060,7 +1062,7 @@ export function tidyWords(lines, lang) {
     let t = w.text.replace(/[|]/g, 'I');
     if (/[A-Za-z]/.test(t)) {
       // (No look-behind in these patterns: older Safari doesn't know it.)
-      t = t.replace(/^1(?=[a-z]{1,3}\b)/, 'i').replace(/([A-Za-z])0(?=[A-Za-z])/g, '$1o').replace(/([A-Za-z])1(?=[A-Za-z])/g, '$1l').replace(/([A-Za-z])5(?=[A-Za-z])/g, '$1s');
+      t = t.replace(/^1(?=[a-z]{1,3}\b)/, 'i').replace(/^1(?=[A-Z]{1,3}\b)/, 'I').replace(/([A-Za-z])0(?=[A-Za-z])/g, '$1o').replace(/([A-Za-z])1(?=[A-Za-z])/g, '$1l').replace(/([A-Za-z])5(?=[A-Za-z])/g, '$1s');
     } else if (/^[17]([.,!?…'’"”]*)$/.test(t) && numbers <= 1 && all.length > 2) {
       t = 'I' + t.slice(1);
     }
@@ -1074,15 +1076,26 @@ export function tidyWords(lines, lang) {
     const m = /^I([A-Za-z]+)([^A-Za-z]*)$/.exec(w.text);
     if (m && m[1].length > 1 && FOLLOWS_I.has(m[1].toLowerCase()) && !FOLLOWS_I.has(w.text.toLowerCase())) w.text = `I ${m[1]}${m[2]}`;
   }
+  // Stray marks read as words: a lone dash, a scrap with a dash at the very end ("y-").
+  for (const l of lines) l.words = l.words.filter((w) => !/^[-–—~]+$/.test(w.text));
+  const tail = lines.length && lines[lines.length - 1].words;
+  if (tail && tail.length > 1 && /^[A-Za-z]{1,2}-$/.test(tail[tail.length - 1].text)) tail.pop();
+  for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].words.length) lines.splice(i, 1);
+  all.length = 0;
+  for (const l of lines) for (const w of l.words) all.push(w);
+  // Comic capitals become ordinary sentences (nearly all capitals: a misread letter or two is lower case).
   const letters = all.map((w) => w.text).join('').replace(/[^A-Za-z]/g, '');
-  if (letters.length > 3 && letters === letters.toUpperCase()) {
+  const upper = letters.replace(/[^A-Z]/g, '').length;
+  if (letters.length > 3 && upper >= letters.length * 0.8) {
     let start = true;
+    let joined = false; // (the rest of a word broken across lines with a hyphen)
     for (const w of all) {
       let t = w.text.toLowerCase();
       if (/^i(['’](m|ll|ve|d))?[^a-z]*$/.test(t)) t = 'I' + t.slice(1);
       // (A name, not in the dictionary, keeps its capital: "Roxy".)
       const bare = t.replace(/[^a-z]/g, '');
-      if (start || (dict && bare.length >= 3 && !dict.has(bare) && /^[a-z]/.test(t.replace(/^[^a-z]+/, '')))) t = t.replace(/[a-z]/, (c) => c.toUpperCase());
+      if (!joined && (start || (dict && bare.length >= 3 && !dict.has(bare) && /^[a-z]/.test(t.replace(/^[^a-z]+/, ''))))) t = t.replace(/[a-z]/, (c) => c.toUpperCase());
+      joined = /[a-z]-$/.test(t);
       w.text = t;
       start = /[.!?…]["'”’)]*$/.test(t);
     }

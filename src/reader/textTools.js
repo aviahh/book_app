@@ -154,6 +154,19 @@ export function pageText(spans, layerRect, { furniture = false } = {}) {
       const y = (rect.top + rect.bottom) / 2 - layerRect.top;
       if (y < layerRect.height * 0.09 || y > layerRect.height * 0.91) continue; // a running page number
     }
+    // A comic: each bubble ends a sentence (bubbles are read one at a time, never run together).
+    const bubble = spans[i].dataset && spans[i].dataset.bubble;
+    const before = i > 0 && spans[i - 1].dataset ? spans[i - 1].dataset.bubble : undefined;
+    if (bubble != null && before != null && bubble !== before && chars.length) {
+      let n = chars.length;
+      while (n > 0 && /\s/.test(chars[n - 1])) n--;
+      if (n && !/[.!?…"”’)\]]/.test(chars[n - 1])) {
+        chars.splice(n, 0, '.');
+        map.splice(n, 0, null);
+      }
+      chars.push(' ');
+      map.push(null);
+    }
     if (chars.length && prevRect) {
       const newLine = Math.abs(rect.top - prevRect.top) > rect.height * 0.5 || (spans[i - 1] && spans[i - 1].nextSibling && spans[i - 1].nextSibling.nodeName === 'BR');
       if (newLine) {
@@ -281,6 +294,17 @@ export function furnitureOf(spans, layerRect, marksOnly = false) {
  * Split text into sentences of at most `max` characters (longer sentences at
  * a clause, else a word), as [start, end) offsets, starting at `from`.
  */
+// A full stop that doesn't end a sentence: after a title ("Ms. Roana").
+const TITLES = /(^|\s)(mr|mrs|ms|dr|st|mt|prof|sr|jr|vs)\.$/i;
+
+/** The first sentence end in a stretch of text (a regex match), or null. */
+function sentenceEnd(window) {
+  const re = /[.!?…]["'”’)\]]*\s/g;
+  let m;
+  while ((m = re.exec(window))) if (!TITLES.test(window.slice(0, m.index + 1))) return m;
+  return null;
+}
+
 export function sentenceRanges(text, from = 0, max = 180) {
   const out = [];
   let s = from;
@@ -290,10 +314,10 @@ export function sentenceRanges(text, from = 0, max = 180) {
     let cut = -1;
     if (s + max >= text.length) {
       // The rest fits: still stop at the first sentence end.
-      const m = /[.!?…]["'”’)\]]*\s/.exec(window);
+      const m = sentenceEnd(window);
       cut = m ? m.index + m[0].length : window.length;
     } else {
-      const m = /[.!?…]["'”’)\]]*\s/.exec(window);
+      const m = sentenceEnd(window);
       if (m) cut = m.index + m[0].length;
       else {
         for (const re of [/[,;:—–]\s/g, /\s/g]) {

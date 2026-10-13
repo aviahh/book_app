@@ -3188,8 +3188,9 @@ class Reader {
       const page = r.page;
       r.page++;
       r.offset = 0;
-      // The page ends mid-sentence: finish the sentence from the next page.
-      if (!/[.!?…]["'”’)\]]*$/.test(last.text) && page < this.total) {
+      // The page ends mid-sentence: finish the sentence from the next page (not in a comic: its
+      // last bubble ends there).
+      if (this.kind !== 'comic' && !/[.!?…]["'”’)\]]*$/.test(last.text) && page < this.total) {
         const next = await this.#pageTextOf(page + 1);
         const first = sentenceRanges(next, 0)[0];
         if (first && last.text.length + first[1] - first[0] < 185) {
