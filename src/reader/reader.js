@@ -66,6 +66,7 @@ const LONG_PRESS_MS = 450; // press and hold a word: translate it
 const READ_ON_TURNS = 2; // after a jump, this many page turns forward make that place your reading position
 const DOUBLE_TAP_ZOOM = 2.2; // where a double tap zooms to (when not going to one page)
 const MAX_ZOOM = 4;
+const SYSTEM_EDGE = 28; // px at the top and bottom of the screen: where the system's own swipes begin
 const SWIPE_TURN_ZOOM = 1.35; // landscape: zoomed in up to this, a sideways swipe still turns the page
 const STRIP_GAP = 14;
 // One page when zoomed in (landscape): zooming out stops where the page is
@@ -2214,13 +2215,18 @@ class Reader {
     if (Math.hypot(dx, dy) > MOVE_SLOP) ptr.moved = true;
     if (ptr.moved) this.userMovedAt = performance.now(); // (read-aloud waits a moment before following again)
 
-    if (!ptr.drag && !ptr.pan && !ptr.chromeShown && ptr.moved) {
+    // A finger starting at the very top or bottom edge is the system's (its menus, going Home):
+    // the page doesn't move for it.
+    if (ptr.moved && !ptr.drag && !ptr.pan && e.pointerType === 'touch' && (ptr.cy0 < SYSTEM_EDGE || ptr.cy0 > window.innerHeight - SYSTEM_EDGE)) ptr.system = true;
+    if (!ptr.drag && !ptr.pan && !ptr.chromeShown && !ptr.system && ptr.moved) {
       const swipe = this.#zoomedSwipe(dx, dy);
       if (swipe) {
         ptr.drag = { dir: swipe, swipeOnly: true, zoomed: true };
         this.#closePopup();
       } else if (this.mode === 'single' || this.camera.zoomed) {
-        ptr.pan = { samples: [] };
+        const cam = this.camera;
+        ptr.pan = { samples: [], from: { s: cam.s, tx: cam.tx, ty: cam.ty }, at: performance.now() };
+        this.lastPan = ptr.pan;
         this.#closePopup();
       } else if (Math.abs(dx) > MOVE_SLOP || Math.abs(dy) > 40) {
         // Landscape, not zoomed: swipes from the page edge turn the page.
@@ -2317,6 +2323,14 @@ class Reader {
     }
 
     if (ptr.pan) {
+      // Taken over by the system (a gesture to go Home that began as a scroll): back to where it was.
+      if (cancelled) {
+        const f = ptr.pan.from;
+        this.camera.stop();
+        this.camera.set(f.s, f.tx, f.ty);
+        this.camera.flush();
+        return;
+      }
       const s = ptr.pan.samples;
       if (s.length > 1 && !cancelled) {
         const a = s[0];
@@ -3038,6 +3052,16 @@ class Reader {
   #onVisibility() {
     if (document.hidden) {
       clearTimeout(this.popCloseTimer);
+      // Left the app straight after starting to scroll (a gesture to go Home, the system's
+      // menus): the place is where it was before that scroll.
+      const pan = this.lastPan;
+      if (pan && performance.now() - pan.at < 1200) {
+        this.camera.stop();
+        this.camera.set(pan.from.s, pan.from.tx, pan.from.ty);
+        this.camera.flush();
+        this.lastPan = null;
+        if (this.ptr && this.ptr.pan === pan) this.ptr = null;
+      }
       if (this.mode) updateBook(this.book.id, { lastPage: this.#currentPage(), lastOpenedAt: Date.now() });
       try {
         localStorage.setItem(READING_KEY, JSON.stringify({ v: 2, id: this.book.id, at: Date.now(), view: this.mode ? this.#viewAnchor() : null }));
