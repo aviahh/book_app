@@ -276,7 +276,9 @@ export function furnitureOf(spans, layerRect, marksOnly = false) {
     const note = small(l) && l.top > H * 0.5;
     if (!inFoot && !note) break;
     if (l.top - lines[k - 1].top > step * 1.6) {
-      for (let j = k; j < lines.length; j++) mark(lines[j]);
+      // (Lines of the body's size set apart at the end of the text, like "1 king's dollar = 50,000
+      // stone coins", are text: only small print, the very foot of the page and short marks go.)
+      for (let j = k; j < lines.length; j++) if (small(lines[j]) || lines[j].top > H * 0.92 || lines[j].chars <= 12) mark(lines[j]);
     }
   }
   // Head of the page: running titles, chapter names, page numbers.
@@ -284,7 +286,8 @@ export function furnitureOf(spans, layerRect, marksOnly = false) {
     const l = lines[k];
     if (!(l.top < H * 0.14 && (brief(l) || small(l)))) break;
     if (lines[k + 1].top - l.top > step * 1.6) {
-      for (let j = 0; j <= k; j++) mark(lines[j]);
+      // (The same at the top: a line of text before a break stays; running heads sit at the very top.)
+      for (let j = 0; j <= k; j++) if (small(lines[j]) || lines[j].top < H * 0.07 || lines[j].chars <= 12) mark(lines[j]);
     }
   }
   return out;
