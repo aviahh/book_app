@@ -201,7 +201,8 @@ export function findBubbles(gray, w, h, pass = passable(gray, w, h, ERODE)) {
       const bw = b.x1 - b.x0 + 1;
       const bh = b.y1 - b.y0 + 1;
       // The page's margin, not a bubble (a bubble cut off by the page's edge is much smaller).
-      if ((b.x0 <= 1 || b.y0 <= 1 || b.x1 >= w - 2 || b.y1 >= h - 2) && b.n > w * h * 0.04) continue;
+      // (The margin runs right round the page; a bubble cut off by an edge doesn't.)
+      if ((b.x0 <= 1 || b.y0 <= 1 || b.x1 >= w - 2 || b.y1 >= h - 2) && (bw > w * 0.6 || bh > h * 0.6)) continue;
       if (b.n < w * h * 0.0012 || bw < w * 0.035 || bh < h * 0.02) continue;
       if (b.n / (bw * bh) < 0.25) continue; // a long thin gap in the art
       const ink = inkShare(gray, w, b);
@@ -705,7 +706,7 @@ export function letterGroups(gray, w, b, lh) {
   const groups = [];
   for (const ms of byRoot.values()) {
     for (const col of columns(ms)) {
-      const g = { x0: col[0].x0, y0: col[0].y0, x1: col[0].x1, y1: col[0].y1, marks: col.length, at: [] };
+      const g = { x0: col[0].x0, y0: col[0].y0, x1: col[0].x1, y1: col[0].y1, marks: col.length, at: [], ms: col };
       for (const m of col) {
         g.x0 = Math.min(g.x0, m.x0);
         g.y0 = Math.min(g.y0, m.y0);
@@ -795,6 +796,11 @@ export function wordLike(r, lang) {
   const words = [];
   for (const l of r.lines) for (const w of l.words) words.push(w);
   if (!words.length) return false;
+  // Stacked letters read as a word: the engine is seldom sure of them, but a real word or a sound is enough.
+  if (r.stacked && lang === 'en') {
+    const bare = r.text.replace(/[^A-Za-z]/g, '').toLowerCase();
+    return bare.length >= 2 && (said(bare) || (dict && dict.has(bare)));
+  }
   const text = words.map((w) => w.text).join(' ');
   const letters = text.replace(/[^\p{L}]/gu, '').length;
   const signs = text.replace(/[\p{L}\p{N}\s.,!?…'’"“”\-–—~()]/gu, '').length;
@@ -855,11 +861,111 @@ async function readBubble(img, a, sx, b, lang) {
     if (groups.length > 1) {
       const pad = Math.max(3, Math.round((lh || 12) * 0.8));
       const out = [];
-      for (const g of groups) out.push(await readBest(img, a, sx, within(b, g, pad, a.w), lang));
+      for (const g of groups) out.push(await readGroup(img, a, sx, b, g, pad, lang));
       return out;
     }
+    if (groups.length === 1 && stacked(groups[0])) return [await readGroup(img, a, sx, b, groups[0], 0, lang)];
   }
   return [await readBest(img, a, sx, b, lang)];
+}
+
+/** Read a group of letters: letters stacked one under another as one word, else as usual. */
+async function readGroup(img, a, sx, b, g, pad, lang) {
+  const glyphs = stacked(g);
+  if (glyphs) {
+    const v = await readStack(img, a, sx, g, glyphs, lang);
+    if (v) return v;
+  }
+  return readBest(img, a, sx, within(b, g, pad || Math.max(3, Math.round(g.letterSize * 0.8)), a.w), lang);
+}
+
+/**
+ * Letters written one under another ("W / H / O / A / !"): the group's marks, top to bottom, as
+ * letters (an "!" or "?" is two marks: its dot goes with it). Returns the letters' boxes, or null
+ * when the group isn't like that.
+ */
+function stacked(g) {
+  const ms = (g.ms || []).slice().sort((p, q) => p.y0 - q.y0);
+  if (ms.length < 3) return null;
+  const hs = ms.map((m) => m.y1 - m.y0 + 1).sort((p, q) => p - q);
+  const mid = hs[hs.length >> 1];
+  const glyphs = [];
+  for (const m of ms) {
+    const last = glyphs[glyphs.length - 1];
+    const small = m.y1 - m.y0 + 1 < mid * 0.45;
+    // A dot (of "!", "?", "i") just under or over the mark before: the same letter.
+    if (last && small && m.y0 - last.y1 < mid * 0.5 && Math.min(m.x1, last.x1) - Math.max(m.x0, last.x0) > -mid * 0.2) {
+      Object.assign(last, { x0: Math.min(last.x0, m.x0), x1: Math.max(last.x1, m.x1), y1: Math.max(last.y1, m.y1) });
+      continue;
+    }
+    glyphs.push({ x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1 });
+  }
+  if (glyphs.length < 3) return null;
+  // One letter to a line: each below the one before (hardly overlapping), in a column.
+  const cx = glyphs.map((q) => (q.x0 + q.x1) / 2).sort((p, q) => p - q)[glyphs.length >> 1];
+  const width = Math.max(...glyphs.map((q) => q.x1 - q.x0 + 1));
+  for (let i = 0; i < glyphs.length; i++) {
+    const q = glyphs[i];
+    if (Math.abs((q.x0 + q.x1) / 2 - cx) > Math.max(width, mid) * 0.8) return null;
+    if (i && q.y0 < glyphs[i - 1].y1 - mid * 0.25) return null; // side by side: a line of letters
+  }
+  if (width > mid * 2.2) return null; // a word per line, not a letter
+  return glyphs;
+}
+
+/** Read stacked letters: set side by side, as a line, and read as one word. */
+async function readStack(img, a, sx, g, glyphs, lang) {
+  const k = a.k;
+  const H = 48;
+  const pics = glyphs.map((q) => {
+    const x = sx + q.x0 / k;
+    const y = q.y0 / k;
+    const w = (q.x1 - q.x0 + 1) / k;
+    const h = (q.y1 - q.y0 + 1) / k;
+    return { x, y, w, h };
+  });
+  const tallest = Math.max(...pics.map((q) => q.h));
+  const s = H / tallest;
+  const gap = Math.round(H * 0.18);
+  const pad = 24;
+  const cw = Math.round(pics.reduce((n, q) => n + q.w * s + gap, pad * 2));
+  const ch = Math.round(H + pad * 2);
+  const c = document.createElement('canvas');
+  c.width = cw;
+  c.height = ch;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, cw, ch);
+  ctx.imageSmoothingQuality = 'high';
+  let x = pad;
+  for (const q of pics) {
+    // Letters sit on one baseline (small ones, like a dot, at the bottom).
+    ctx.drawImage(img, q.x, q.y, q.w, q.h, x, pad + H - q.h * s, q.w * s, q.h * s);
+    x += q.w * s + gap;
+  }
+  const d = ctx.getImageData(0, 0, cw, ch);
+  const px = d.data;
+  const hist = new Uint32Array(256);
+  for (let j = 0; j < px.length; j += 4) hist[(px[j] * 299 + px[j + 1] * 587 + px[j + 2] * 114) / 1000 | 0]++;
+  const t = otsu(hist, px.length / 4);
+  for (let j = 0; j < px.length; j += 4) {
+    const v = (px[j] * 299 + px[j + 1] * 587 + px[j + 2] * 114) / 1000 <= t ? 0 : 255;
+    px[j] = px[j + 1] = px[j + 2] = v;
+  }
+  ctx.putImageData(d, 0, 0);
+  const worker = await workerFor(lang);
+  await worker.setParameters({ tessedit_pageseg_mode: '7', preserve_interword_spaces: '0', user_defined_dpi: '300', tessedit_char_blacklist: '|{}[]<>@#$%^&*_=+~`\\' });
+  const { data } = await worker.recognize(c, {}, { text: true, blocks: true });
+  const image = debug.images ? c.toDataURL() : undefined;
+  c.width = c.height = 0;
+  const text = (data.text || '').replace(/\s+/g, '').trim();
+  if (!text) return null;
+  const box = { x: sx + g.x0 / k, y: g.y0 / k, w: (g.x1 - g.x0 + 1) / k, h: (g.y1 - g.y0 + 1) / k };
+  const words = [{ text, conf: data.confidence || 0, x0: box.x, y0: box.y, x1: box.x + box.w, y1: box.y + box.h }];
+  const lines = [{ words }];
+  tidyWords(lines, lang);
+  if (!lines.length) return null;
+  return { lines, text: lines[0].words.map((w) => w.text).join(' '), box, confidence: data.confidence || 0, image, stacked: true };
 }
 
 /**
