@@ -453,7 +453,8 @@ export function lobesOf(b, w, gray) {
     line(pr.p, pr.q, (k) => (all++, (inside += fill[k] ? 1 : 0)));
     if (inside < all * 0.92) continue;
     const before = parts();
-    line(pr.p, pr.q, (k) => (cut[k] = 1));
+    const mine = []; // (pixels this cut marks: taking it back leaves earlier cuts whole)
+    line(pr.p, pr.q, (k) => !cut[k] && (mine.push(k), (cut[k] = 1)));
     const after = parts();
     // Two parts of good size where there was one, and the cut short beside them.
     const big = after.sizes.filter((n) => n >= area * 0.06).length;
@@ -487,11 +488,11 @@ export function lobesOf(b, w, gray) {
           }
           return hi - lo;
         };
-        ok = pr.len < Math.min(span(sa), span(sb)) * 0.8;
+        ok = pr.len < Math.min(span(sa), span(sb)) * 0.92;
       }
     }
     if (ok) made++;
-    else line(pr.p, pr.q, (k) => (cut[k] = 0));
+    else for (const k of mine) cut[k] = 0;
   }
   return parts().lab;
 }
@@ -751,7 +752,7 @@ function looseGroups(gray, w, h, bubbles, lh, paper = 0.6) {
       }
     }
     if (light < all * paper || inBubble > all * 0.15) continue;
-    out.push({ x0: Math.max(0, g.x0 - m), y0: Math.max(0, g.y0 - m), x1: Math.min(w - 1, g.x1 + m), y1: Math.min(h - 1, g.y1 + m), rows: null });
+    out.push(within(page, g, m, w)); // (just its letters: the art around isn't read)
   }
   return out;
 }
@@ -804,13 +805,13 @@ export function wordLike(r, lang) {
   if (r.confidence < 50 || sure < words.length * 0.5) return false;
   if (lang === 'en') {
     // Real lettering has words of several letters, with vowels.
-    const real = words.filter((w) => /[A-Za-z]{2,}/.test(w.text) && /[aeiouyAEIOUY]/.test(w.text)).length;
+    const real = words.filter((w) => (/[A-Za-z]{2,}/.test(w.text) && /[aeiouyAEIOUY]/.test(w.text)) || said(w.text.replace(/[^A-Za-z]/g, '').toLowerCase())).length;
     const one = words.filter((w) => /^[IAaOo][.,!?…'’]*$/.test(w.text)).length;
     if (real + one < Math.max(1, words.length * 0.5)) return false;
     // Only short scraps ("AT", "Si AY"): a word of three letters or more, or one of the short
     // things people say ("Oh...", "Go!", "Uh...").
     const bare = words.map((w) => w.text.replace(/[^A-Za-z]/g, '').toLowerCase()).filter(Boolean);
-    if (!bare.some((t) => t.length >= 3) && !bare.every((t) => SHORT.has(t))) return false;
+    if (!bare.some((t) => t.length >= 3) && !bare.every((t) => SHORT.has(t) || said(t))) return false;
     if (digits * 2 >= letters) return false;
   }
   return true;
@@ -872,16 +873,34 @@ async function readBest(img, a, sx, b, lang) {
   if (lang !== 'en' || (first.confidence >= 85 && words.every((w) => w.conf >= 70)) || !words.length) return first;
   // (Nothing like words at all: a picture, not worth a second look.)
   if (first.confidence < 40 || first.text.replace(/[^A-Za-z]/g, '').length < 2) return first;
-  const second = await readRegion(img, a, sx, b, lang, 50);
-  const score = (r) => (wordLike(r, lang) ? 100 : 0) + r.confidence;
-  return score(second) > score(first) ? second : first;
+  // Bigger letters; and a line or two read as one line, which suits short exclamations.
+  const tries = [first, await readRegion(img, a, sx, b, lang, 50)];
+  if (first.lines.length <= 2) tries.push(await readRegion(img, a, sx, b, lang, 50, '7'));
+  return tries.reduce((p, q) => (readingScore(q, lang) > readingScore(p, lang) ? q : p));
+}
+
+/** How good a reading looks: like words, and sure of words that are English (or said aloud). */
+function readingScore(r, lang) {
+  const words = r.lines.reduce((n, l) => n.concat(l.words), []);
+  if (!words.length) return 0;
+  const sure = words.reduce((n, w) => {
+    const bare = w.text.replace(/[^A-Za-z]/g, '').toLowerCase();
+    const known = !bare || !dict || dict.has(bare) || SHORT.has(bare) || said(bare);
+    return n + (w.conf == null ? 50 : w.conf) * (known ? 1 : 0.75);
+  }, 0);
+  return (wordLike(r, lang) ? 100 : 0) + sure / words.length;
+}
+
+/** A sound people make, letters drawn out: "Waaaah", "Ahhh", "Hmmm", "Eek", "Eyyyaah". */
+export function said(bare) {
+  return /^(?:w+a+h*|a+h+|o+h+|u+h+|e+h+|h+m+|m+|u+m+|e+e+k+|g+a+h+|n+o+|y+a+y+|e*y+a+h*|a+w+|o+w+|w+o+w+|h+u+h+|w+h+o+a+)$/.test(bare);
 }
 
 /**
  * Read one region (a bubble with its row spans, or a plain box). Positions
  * come back in picture pixels: { lines: [{ words: [{ text, x0, y0, x1, y1 }] }], text, confidence }.
  */
-async function readRegion(img, a, sx, b, lang, letterPx = 34) {
+async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja-v' ? '5' : '6') {
   const k = a.k;
   // The outline is left out: the mask is drawn in from the edge by a few per cent.
   const inset = b.rows && !b.part ? Math.max(2, Math.round(Math.min(b.x1 - b.x0, b.y1 - b.y0) * 0.05)) : 0;
@@ -940,7 +959,7 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34) {
   ctx.putImageData(d, 0, 0);
   const worker = await workerFor(lang);
   await worker.setParameters({
-    tessedit_pageseg_mode: lang === 'ja-v' ? '5' : '6',
+    tessedit_pageseg_mode: psm,
     preserve_interword_spaces: '1',
     user_defined_dpi: '300',
     tessedit_char_blacklist: lang === 'en' ? '|{}[]<>@#$%^&*_=+~`\\' : '',
@@ -1013,7 +1032,7 @@ export function fixWord(text) {
   const key = core.toLowerCase();
   // Two letters: only an e read as c ("mc", "wc", "bc").
   if (key.length === 2 && /c$/.test(key) && !SHORT.has(key) && dict.get(key[0] + 'e') < 300) return m[1] + core[0] + (core[1] === 'C' ? 'E' : 'e') + m[3];
-  if (key.length < 3 || dict.has(key) || /^\d+$/.test(key)) return text;
+  if (key.length < 3 || dict.has(key) || said(key) || /^\d+$/.test(key)) return text;
   let best = null;
   let rank = Infinity;
   const tryWord = (cand) => {
@@ -1185,7 +1204,17 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
       const lh = sizes.length ? sizes[sizes.length >> 1] : 40;
       for (const box of await sparseText(img, sx, sw, lh, out.map((r) => r.box))) {
         const k = a.k;
-        const b = { x0: Math.max(0, Math.round((box.x - sx) * k)), y0: Math.max(0, Math.round(box.y * k)), x1: Math.min(a.w - 1, Math.round((box.x - sx + box.w) * k)), y1: Math.min(a.h - 1, Math.round((box.y + box.h) * k)), rows: null };
+        let b = { x0: Math.max(0, Math.round((box.x - sx) * k)), y0: Math.max(0, Math.round(box.y * k)), x1: Math.min(a.w - 1, Math.round((box.x - sx + box.w) * k)), y1: Math.min(a.h - 1, Math.round((box.y + box.h) * k)), rows: null };
+        // The engine was sure of some of the words: the whole block of lettering around them is read
+        // (the letters' lines and blocks, found near them).
+        const lhA = lh * k;
+        const near = { x0: Math.max(0, Math.round(b.x0 - lhA * 4)), y0: Math.max(0, Math.round(b.y0 - lhA * 4)), x1: Math.min(a.w - 1, Math.round(b.x1 + lhA * 4)), y1: Math.min(a.h - 1, Math.round(b.y1 + lhA * 4)), rows: null };
+        const mine = letterGroups(a.g, a.w, near, lhA).filter((g) => !(g.x1 < b.x0 || g.x0 > b.x1 || g.y1 < b.y0 || g.y0 > b.y1) && g.even >= 0.6);
+        if (mine.length) {
+          // Only those letters are read, not the picture around them (tone, clouds).
+          const u = { x0: Math.min(...mine.map((g) => g.x0)), y0: Math.min(...mine.map((g) => g.y0)), x1: Math.max(...mine.map((g) => g.x1)), y1: Math.max(...mine.map((g) => g.y1)), at: [].concat(...mine.map((g) => g.at)) };
+          b = within({ x0: 0, y0: 0, x1: a.w - 1, y1: a.h - 1, rows: null }, u, Math.max(3, Math.round(lhA * 0.6)), a.w);
+        }
         const r = await readBest(img, a, sx, b, lang);
         if (wordLike(r, lang)) out.push(r);
         else if (rejected) rejected.push(r);
@@ -1283,12 +1312,21 @@ function inPanelOrder(list, rtl, panels, geo) {
   const free = [];
   for (const it of list) {
     const b = it.box;
+    // The panel holding most of it; one reaching out into the gutter belongs to the panel it touches
+    // most, or failing that the nearest one close by.
     let best = null;
-    let most = b.w * b.h * 0.3;
+    let most = 0;
     for (const q of boxes) {
       const ox = Math.min(b.x + b.w, q.x + q.w) - Math.max(b.x, q.x);
       const oy = Math.min(b.y + b.h, q.y + q.h) - Math.max(b.y, q.y);
       if (ox > 0 && oy > 0 && ox * oy > most) (most = ox * oy), (best = q);
+    }
+    if (!best) {
+      let near = Math.max(b.w, b.h) * 0.6;
+      for (const q of boxes) {
+        const d = Math.max(0, q.x - (b.x + b.w), b.x - (q.x + q.w)) + Math.max(0, q.y - (b.y + b.h), b.y - (q.y + q.h));
+        if (d < near) (near = d), (best = q);
+      }
     }
     if (best) best.items.push(it);
     else free.push({ x: b.x, y: b.y, w: b.w, h: b.h, items: [it] });
