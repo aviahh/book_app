@@ -58,6 +58,25 @@ function queued(fn) {
 
 // For testing: keep the picture each region was read from (res.image).
 export const debug = { images: false, trace: null, stats: null };
+// Reading a page is long work on the main thread: it stops for a moment between steps, so the
+// screen stays responsive (turning pages, scrolling) while the bubbles are read.
+// While you're touching the screen or the view is moving, it waits (the reader says when: see
+// whileBusy), so gestures and page turns get the device to themselves.
+let busyNow = () => false;
+export function whileBusy(fn) {
+  busyNow = fn || (() => false);
+}
+const breathe = async () => {
+  await new Promise((r) => setTimeout(r, 0));
+  for (let t = 0; t < 100 && busyNow(); t++) await new Promise((r) => setTimeout(r, 120));
+};
+
+const phase = (kind, fn) => {
+  const t = performance.now();
+  const out = fn();
+  if (debug.stats) (debug.stats[kind] = debug.stats[kind] || [0, 0]), (debug.stats[kind][0] += 1), (debug.stats[kind][1] += performance.now() - t);
+  return out;
+};
 const timed = async (kind, job) => {
   const t = performance.now();
   const out = await job;
@@ -452,14 +471,19 @@ export function lobesOf(b, w, gray) {
   }
   pairs.sort((p, q) => p.len - q.len);
   let made = 0;
+  // (The parts as they stand, worked out again only when a cut is made; and only cuts short
+  // beside the bubble, the shortest few, are tried: each try is a pass over the whole bubble.)
+  let before = parts();
+  let tried = 0;
+  const longest = Math.sqrt(area) * 0.9;
   for (const pr of pairs) {
-    if (made >= 3) break;
+    if (made >= 3 || tried >= 24 || pr.len > longest) break;
     // Across the bubble's own paper (not out over the art).
     let inside = 0;
     let all = 0;
     line(pr.p, pr.q, (k) => (all++, (inside += fill[k] ? 1 : 0)));
     if (inside < all * 0.92) continue;
-    const before = parts();
+    tried++;
     const mine = []; // (pixels this cut marks: taking it back leaves earlier cuts whole)
     line(pr.p, pr.q, (k) => !cut[k] && (mine.push(k), (cut[k] = 1)));
     const after = parts();
@@ -498,7 +522,7 @@ export function lobesOf(b, w, gray) {
         ok = pr.len < Math.min(span(sa), span(sb)) * 0.92;
       }
     }
-    if (ok) made++;
+    if (ok) (made++, (before = after));
     else for (const k of mine) cut[k] = 0;
   }
   return parts().lab;
@@ -569,7 +593,7 @@ export function letterGroups(gray, w, b, lh) {
   // In this region: the paper around the mark is this region's (not a neighbouring bubble's within the spans).
   const h = b.label ? b.label.length / w : 0;
   // A bubble: its lobes (for a bubble drawn joined); each letter is in the lobe holding most of it.
-  const lobe = b.label && b.rows ? lobesOf(b, w, gray) : null;
+  const lobe = b.label && b.rows ? phase('lobes', () => lobesOf(b, w, gray)) : null;
   const lobeOf = (m) => {
     if (!lobe) return 0;
     const count = new Map();
@@ -638,14 +662,18 @@ export function letterGroups(gray, w, b, lh) {
     return true;
   };
   const lobes = letters.map(lobeOf);
-  const joined = (items, near) => {
+  // (Items sorted along one side, x or y: pairs further apart than `reach` there aren't looked at.)
+  const joined = (list, near, side, reach) => {
+    const items = list.slice().sort((p, q) => p[side + '0'] - q[side + '0']);
     const up = items.map((_, k) => k);
     const root = (k) => {
       while (up[k] !== k) k = up[k] = up[up[k]];
       return k;
     };
     for (let a = 0; a < items.length; a++) {
+      const end = items[a][side + '1'] + reach;
       for (let c = a + 1; c < items.length; c++) {
+        if (items[c][side + '0'] > end) break;
         const ra = root(a);
         const rc = root(c);
         if (ra !== rc && near(items[a], items[c])) up[ra] = rc;
@@ -667,24 +695,24 @@ export function letterGroups(gray, w, b, lh) {
     const hs = letters.map((m) => m.y1 - m.y0 + 1).sort((p, q) => p - q);
     return hs.length ? Math.max(size, hs[Math.floor(hs.length * 0.75)]) : size;
   })();
-  const lines = joined(letters, (p, q) => {
+  const lines = lobe ? [] : joined(letters, (p, q) => {
     if (p.lobe !== q.lobe) return false;
     const over = Math.min(p.y1, q.y1) - Math.max(p.y0, q.y0);
     const cy = Math.abs((p.y0 + p.y1) / 2 - (q.y0 + q.y1) / 2);
     if (over < Math.min(p.y1 - p.y0, q.y1 - q.y0) * 0.4 && cy > size * 0.5) return false;
     const gap = Math.max(p.x0, q.x0) - Math.min(p.x1, q.x1);
     return gap <= tall * 0.9 && clear(p, q);
-  }).map(boxOf);
+  }, 'x', tall * 0.9).map(boxOf);
   // Blocks: lines one under another (a line's space apart), overlapping sideways. Two remarks
   // side by side in a bubble, or a box beside a bubble, stay apart.
-  const blocks = joined(lines, (p, q) => {
+  const blocks = lobe ? [] : joined(lines, (p, q) => {
     if (p.lobe !== q.lobe) return false;
     const gapY = Math.max(p.y0, q.y0) - Math.min(p.y1, q.y1);
     if (gapY > tall * 1.1 || gapY < -tall * 0.3) return false;
     const over = Math.min(p.x1, q.x1) - Math.max(p.x0, q.x0);
     const narrow = Math.min(p.x1 - p.x0, q.x1 - q.x0);
     return over >= narrow * 0.25 && clear(p, q);
-  });
+  }, 'y', tall * 1.1);
   // In a bubble, a lobe's letters are one remark; only two stacks of lines side by side, with a
   // clear gap between them all the way down, are two.
   const byRoot = new Map();
@@ -1142,6 +1170,7 @@ export function said(bare) {
  * come back in picture pixels: { lines: [{ words: [{ text, x0, y0, x1, y1 }] }], text, confidence }.
  */
 async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja-v' ? '5' : '6') {
+  await breathe();
   const k = a.k;
   // The outline is left out: the mask is drawn in from the edge by a few per cent.
   const inset = b.rows && !b.part ? Math.max(2, Math.round(Math.min(b.x1 - b.x0, b.y1 - b.y0) * 0.05)) : 0;
@@ -1518,21 +1547,28 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
     if (lang === 'en') await loadDictionary();
     bookNames = names;
     const ih = img.naturalHeight || img.height;
-    const a = grayOf(img, sx, 0, sw, ih);
-    const found = findBubbles(a.g, a.w, a.h);
+    const a = phase('gray', () => grayOf(img, sx, 0, sw, ih));
+    await breathe();
+    const found = phase('bubbles', () => findBubbles(a.g, a.w, a.h));
+    await breathe();
     if (lang === 'en') {
       // Lettering outside them, about the size of the bubbles' own.
       const sizes = found.map((b) => letterHeight(a.g, a.w, b)).filter(Boolean).sort((p, q) => p - q);
       const lh = sizes.length ? sizes[sizes.length >> 1] : 12;
       // (Light areas without letters, such as the letters of a white caption themselves, don't hide
       // lettering found there.)
-      if (found.length) for (const b of found) b.groups = letterGroups(a.g, a.w, b, letterHeight(a.g, a.w, b));
+      for (const b of found) {
+        b.groups = phase('groups', () => letterGroups(a.g, a.w, b, letterHeight(a.g, a.w, b)));
+        await breathe();
+      }
       const holding = found.filter((b) => b.groups.length);
-      const loose = looseGroups(a.g, a.w, a.h, holding, lh);
+      const loose = phase('loose', () => looseGroups(a.g, a.w, a.h, holding, lh));
+      await breathe();
       // And light lettering on dark (a caption on a black panel): the same, the picture inverted.
       const inv = new Uint8Array(a.g.length);
       for (let i = 0; i < inv.length; i++) inv[i] = 255 - a.g[i];
-      for (const g of looseGroups(inv, a.w, a.h, holding, lh, 0.45)) loose.push(Object.assign(g, { invert: true })); // (dark grounds are often hatched)
+      await breathe();
+      for (const g of phase('looseInv', () => looseGroups(inv, a.w, a.h, holding, lh, 0.45))) loose.push(Object.assign(g, { invert: true })); // (dark grounds are often hatched)
       found.push(...loose);
     }
     const out = [];
@@ -1588,7 +1624,8 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
     }
     onProgress(found.length, found.length);
     // (The panels too: read aloud, the view keeps the panel of the bubble being read in sight.)
-    const panels = findPanels(a.g, a.w, a.h);
+    await breathe();
+    const panels = phase('panels', () => findPanels(a.g, a.w, a.h));
     const geo = { sx, sw, ih };
     // The same words read twice (a bubble, and a larger area around it): the surer reading stays.
     if (lang === 'en') {

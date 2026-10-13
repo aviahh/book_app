@@ -2762,7 +2762,9 @@ class Reader {
     const page = await this.doc.getPage(n);
     const src = page.source && (await page.source());
     if (!src) return;
-    const { readPage, inReadingOrder } = await import('../comic/ocr.js');
+    const { readPage, inReadingOrder, whileBusy } = await import('../comic/ocr.js');
+    // Recognition steps aside while you touch the screen, the view moves or a page turns.
+    whileBusy(() => !!(this.ptr || this.pinch || this.busy || this.camera.raf || this.camera.moving || performance.now() - (this.userMovedAt || 0) < 500));
     const note = (t) => {
       const bar = this.el.querySelector('.tts-bar');
       if (this.readMode && bar.dataset.state === 'ready') bar.querySelector('.tts-label').textContent = t;

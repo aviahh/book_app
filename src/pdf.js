@@ -57,6 +57,9 @@ export class CanvasMemoryError extends Error {
  * are opaque, so a transparent corner means nothing was stored.
  */
 export function canvasOk(c) {
+  // (Only iOS does that. Reading a pixel back makes the browser wait for the drawing to finish,
+  // on the screen's own thread: elsewhere it would only slow every page down.)
+  if (!IS_IOS) return !!c.width;
   try {
     const ctx = c.width && c.getContext('2d');
     return !!ctx && ctx.getImageData(0, 0, 1, 1).data[3] !== 0;

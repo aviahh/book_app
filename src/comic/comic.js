@@ -169,7 +169,9 @@ export class ComicDoc {
       url,
       promise: new Promise((resolve) => {
         const img = new Image();
-        img.onload = () => resolve(img);
+        // Decoded away from the screen's own thread before it's drawn (drawing a picture not yet
+        // decoded decodes it there and then, holding up a page turn).
+        img.onload = () => (img.decode ? img.decode().catch(() => {}).then(() => resolve(img)) : resolve(img));
         img.onerror = () => resolve(null);
         img.src = url;
       }),
