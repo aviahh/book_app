@@ -2735,7 +2735,14 @@ class Reader {
    * Every bubble of page n, read (once): for drag-to-read and reading on in comics.
    * Says how far it has got in the read-aloud bar while the bar waits.
    */
-  async #ocrPage(n) {
+  /** A page's bubbles, read (once: asking again while it is being read waits for that). */
+  #ocrPage(n) {
+    const running = this.ocrRunning || (this.ocrRunning = new Map());
+    if (!running.has(n)) running.set(n, this.#readOcrPage(n).finally(() => running.delete(n)));
+    return running.get(n);
+  }
+
+  async #readOcrPage(n) {
     const have = this.doc.ocr.get(n);
     if (have && have.whole) return;
     const page = await this.doc.getPage(n);
@@ -3141,7 +3148,11 @@ class Reader {
   async #pageTextOf(n) {
     const r = this.aloud;
     if (r.texts.has(n)) return r.texts.get(n);
-    if (this.kind === 'comic') await this.#ocrPage(n); // (a comic's words are read from its pictures first)
+    if (this.kind === 'comic') {
+      await this.#ocrPage(n); // (a comic's words are read from its pictures first)
+      // Reading on: the next page is read meanwhile, so the voice needn't wait at the page turn.
+      if (this.aloud && n < this.total) this.#ocrPage(n + 1).catch(() => {});
+    }
     const shown = this.#shownPageText(n);
     let text = shown ? shown.text : null;
     if (text == null) {
