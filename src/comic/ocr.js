@@ -771,7 +771,7 @@ function lineFit(g) {
   const mid = hs[hs.length >> 1];
   const all = ms.filter((m) => m.y1 - m.y0 + 1 >= mid * 0.6);
   let big = all;
-  for (let round = 0; round < 4 && big.length >= 3; round++) {
+  for (let round = 0; round < 4 && big.length >= 2; round++) { // (two letters are enough for "Uh...")
     const xs = big.map((m) => (m.x0 + m.x1) / 2);
     const ys = big.map((m) => (m.y0 + m.y1) / 2);
     const n = xs.length;
@@ -844,6 +844,12 @@ export function wordLike(r, lang) {
   const words = [];
   for (const l of r.lines) for (const w of l.words) words.push(w);
   if (!words.length) return false;
+  // A short sound in a bubble, its letters alone and set level ("Uh...", "Hmm?"): the engine is
+  // seldom sure of so few letters, but a sound people make is enough.
+  if (r.levelled && lang === 'en') {
+    const bare = words.map((w) => w.text.replace(/[^A-Za-z]/g, '').toLowerCase()).filter(Boolean);
+    if (bare.length && bare.length <= 2 && bare.every((t) => t.length >= 2 && (said(t) || SHORT.has(t))) && r.confidence >= 8) return true;
+  }
   // Stacked letters read as a word: the engine is seldom sure of them, but a real word or a sound is enough.
   if (r.stacked && lang === 'en') {
     const bare = r.text.replace(/[^A-Za-z]/g, '').toLowerCase();
@@ -1033,8 +1039,7 @@ async function readBest(img, a, sx, b, lang) {
   const tries = [first];
   // A tilted line (a shout), or one with bits of outline beside it: set level, just its letters.
   if (b.alt) {
-    tries.push(await readRegion(img, a, sx, b.alt, lang, 34));
-    tries.push(await readRegion(img, a, sx, b.alt, lang, 50, '7'));
+    for (const r of [await readRegion(img, a, sx, b.alt, lang, 34), await readRegion(img, a, sx, b.alt, lang, 50, '7')]) tries.push(Object.assign(r, { levelled: true }));
   }
   // (Nothing like words at all: a picture, not worth a second look.)
   const hopeless = !words.length || first.confidence < 40 || first.text.replace(/[^A-Za-z]/g, '').length < 2;
@@ -1045,9 +1050,12 @@ async function readBest(img, a, sx, b, lang) {
   }
   if (tries.length === 1) return first;
   // (A reading that leaves words out isn't better for being sure of the rest.)
-  const most = Math.max(...tries.map((r) => r.text.replace(/[^A-Za-z]/g, '').length), 1);
+  // (Compared among readings that look like words: a page of scraps has more letters, not more words.)
+  const most = Math.max(...tries.filter((r) => wordLike(r, lang)).map((r) => r.text.replace(/[^A-Za-z]/g, '').length), 1);
   const score = (r) => readingScore(r, lang) * Math.min(1, r.text.replace(/[^A-Za-z]/g, '').length / most);
-  return tries.reduce((p, q) => (score(q) > score(p) ? q : p));
+  const pick = tries.reduce((p, q) => (score(q) > score(p) ? q : p));
+  if (debug.trace) debug.trace.push({ tries: tries.map((r) => [r.text, Math.round(r.confidence), Math.round(score(r))]), box: [first.box.x, first.box.y, first.box.x + first.box.w, first.box.y + first.box.h] });
+  return pick;
 }
 
 /** How good a reading looks: like words, and sure of words that are English (or said aloud). */
