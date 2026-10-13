@@ -2756,6 +2756,7 @@ class Reader {
       note('Couldn’t read the words on this page.');
       return;
     }
+    (this.panels || (this.panels = new Map())).set(n, list.panels || []);
     // Bubbles read by pressing on them that the page search missed stay too.
     const before = ((this.doc.ocr.get(n) || {}).bubbles || []).filter((b) => !list.some((x) => this.#overlaps(x.box, b.box)));
     this.doc.setPageText(n, inReadingOrder(list.concat(before), this.rtl));
@@ -3359,6 +3360,11 @@ class Reader {
     };
     if (!c || document.hidden || this.busy || c.turning || cam.raf || now - (this.userMovedAt || 0) < 4000) return rest();
     if (this.settings.readFollow === false) return rest(); // following by hand
+    if (this.kind === 'comic') {
+      if (cam.s <= 1.02 && this.mode !== 'single') return rest(); // a whole spread is in view
+      const goal = this.#panelGoal(c);
+      return goal ? this.#springTo(f, goal.tx, goal.ty, dt, rest) : rest();
+    }
     const frac = this.speech.progress();
     if (frac == null) {
       // A voice that can't say how far it is: bring the sentence into view once.
@@ -3403,6 +3409,12 @@ class Reader {
     // Up and down: only when the line nears the top or bottom, then to about a third down.
     if (top < box.top + this.H * 0.1 || bottom > box.top + this.H * 0.85) f.goalTy = shown.ty + (box.top + this.H * 0.33 - top);
     const goalTy = f.goalTy == null ? shown.ty : f.goalTy;
+    this.#springTo(f, goalTx, goalTy, dt, rest);
+  }
+
+  /** Move the view towards (goalTx, goalTy), a step of a soft spring (state in f). */
+  #springTo(f, goalTx, goalTy, dt, rest) {
+    const cam = this.camera;
     // Far away (the voice went on beyond what is in view): there in one quick move.
     if (Math.abs(goalTy - cam.ty) > this.H * 0.7 || Math.abs(goalTx - cam.tx) > this.W * 1.5) {
       rest();
@@ -3425,6 +3437,44 @@ class Reader {
     if (Math.abs(cam.tx - tx) > 0.5) f.vx = 0;
     if (Math.abs(cam.ty - ty) > 0.5) (f.vy = 0), (f.goalTy = null);
     cam.flush();
+  }
+
+  /**
+   * A comic: where the view should be for the bubble being read. The whole of its panel when that
+   * fits on screen; otherwise as much of the panel as fits, around the words, never past the
+   * panel's edges (unless that would hide the words). Worked out once per bubble.
+   */
+  #panelGoal(c) {
+    if (c.panelGoal) return c.panelGoal;
+    if (!c.rects || !c.rects.length) return null;
+    const cam = this.camera;
+    const shown = cam.shown || cam;
+    const box = this.el.getBoundingClientRect();
+    const t = { l: Math.min(...c.rects.map((r) => r.left)), r: Math.max(...c.rects.map((r) => r.right)), t: Math.min(...c.rects.map((r) => r.top)), b: Math.max(...c.rects.map((r) => r.bottom)) };
+    let p = null;
+    const pageEl = (this.mode === 'single' ? this.stripEl : this.bookEl).querySelector(`.slot .page[data-page="${c.page}"]`);
+    const panels = this.panels && this.panels.get(c.page);
+    if (pageEl && panels && panels.length) {
+      const pr = pageEl.getBoundingClientRect();
+      const boxes = panels.map((q) => ({ l: pr.left + q.x0 * pr.width, r: pr.left + q.x1 * pr.width, t: pr.top + q.y0 * pr.height, b: pr.top + q.y1 * pr.height }));
+      const cx = (t.l + t.r) / 2;
+      const cy = (t.t + t.b) / 2;
+      const area = (q) => Math.max(0, Math.min(q.r, t.r) - Math.max(q.l, t.l)) * Math.max(0, Math.min(q.b, t.b) - Math.max(q.t, t.t));
+      p = boxes.filter((q) => cx >= q.l && cx <= q.r && cy >= q.t && cy <= q.b).sort((a, b) => (a.r - a.l) * (a.b - a.t) - (b.r - b.l) * (b.b - b.t))[0] || boxes.sort((a, b) => area(b) - area(a)).filter((q) => area(q) > 0)[0] || null;
+    }
+    if (!p) p = t;
+    const m = Math.min(this.W, this.H) * 0.03;
+    // Along one axis: how far to move the picture.
+    const along = (lo, hi, a0, a1, v0, v1) => {
+      const mid = (v0 + v1) / 2;
+      let d = hi - lo <= v1 - v0 - 2 * m ? mid - (lo + hi) / 2 : Math.min(v0 - lo, Math.max(v1 - hi, mid - (a0 + a1) / 2));
+      if (a1 - a0 <= v1 - v0 - 2 * m) d = Math.min(v1 - m - a1, Math.max(v0 + m - a0, d)); // the words stay in sight
+      return d;
+    };
+    const dx = along(p.l, p.r, t.l, t.r, box.left, box.right);
+    const dy = along(p.t, p.b, t.t, t.b, box.top, box.bottom);
+    c.panelGoal = { tx: shown.tx + (this.rtl ? -dx : dx), ty: shown.ty + dy };
+    return c.panelGoal;
   }
 
   /** The voice went on to the next page in the middle of the sentence: show it now. */
