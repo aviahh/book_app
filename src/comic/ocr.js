@@ -876,7 +876,10 @@ async function readBest(img, a, sx, b, lang) {
   // Bigger letters; and a line or two read as one line, which suits short exclamations.
   const tries = [first, await readRegion(img, a, sx, b, lang, 50)];
   if (first.lines.length <= 2) tries.push(await readRegion(img, a, sx, b, lang, 50, '7'));
-  return tries.reduce((p, q) => (readingScore(q, lang) > readingScore(p, lang) ? q : p));
+  // (A reading that leaves words out isn't better for being sure of the rest.)
+  const most = Math.max(...tries.map((r) => r.text.replace(/[^A-Za-z]/g, '').length), 1);
+  const score = (r) => readingScore(r, lang) * Math.min(1, r.text.replace(/[^A-Za-z]/g, '').length / most);
+  return tries.reduce((p, q) => (score(q) > score(p) ? q : p));
 }
 
 /** How good a reading looks: like words, and sure of words that are English (or said aloud). */
