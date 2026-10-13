@@ -783,6 +783,9 @@ function within(b, g, pad, w) {
   return { x0, y0, x1, y1, rows, part: true, keep };
 }
 
+// Short things said, that count as words on their own.
+const SHORT = new Set('oh uh ah eh no go so um hm mm ok hi ha ow yo me we us he it is in on to do my by up i a o'.split(' '));
+
 /**
  * Is what was read like words? Pictures read as letters come out as runs of
  * short scraps, digits and signs the engine wasn't sure of ("6 0 0 0 8", "™ v").
@@ -804,6 +807,11 @@ export function wordLike(r, lang) {
     const real = words.filter((w) => /[A-Za-z]{2,}/.test(w.text) && /[aeiouyAEIOUY]/.test(w.text)).length;
     const one = words.filter((w) => /^[IAaOo][.,!?…'’]*$/.test(w.text)).length;
     if (real + one < Math.max(1, words.length * 0.5)) return false;
+    // Only short scraps ("AT", "Si AY"): a word of three letters or more, or one of the short
+    // things people say ("Oh...", "Go!", "Uh...").
+    const bare = words.map((w) => w.text.replace(/[^A-Za-z]/g, '').toLowerCase()).filter(Boolean);
+    if (!bare.some((t) => t.length >= 3) && !bare.every((t) => SHORT.has(t))) return false;
+    if (digits * 2 >= letters) return false;
   }
   return true;
 }
@@ -953,9 +961,80 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34) {
       }
     }
   }
+  // Scraps the engine had no faith in, beside words it read surely (a piece of the art, of the next
+  // bubble), are dropped; the reading's confidence is then the remaining words'.
+  let confidence = data.confidence || 0;
+  if (lang === 'en' && lines.some((l) => l.words.some((w) => w.conf >= 70))) {
+    let dropped = false;
+    for (const l of lines) {
+      const keep = l.words.filter((w) => w.conf >= 25);
+      if (keep.length < l.words.length) (dropped = true), (l.words = keep);
+    }
+    for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].words.length) lines.splice(i, 1);
+    if (dropped) {
+      const all = lines.reduce((n, l) => n.concat(l.words), []);
+      confidence = all.reduce((n, w) => n + w.conf, 0) / Math.max(1, all.length);
+    }
+  }
   tidyWords(lines, lang);
   const text = lines.map((l) => l.words.map((w) => w.text).join(lang === 'en' ? ' ' : '')).join(lang === 'en' ? ' ' : '');
-  return { lines, text: text.replace(/(\w)- (\w)/g, '$1$2').trim(), box, confidence: data.confidence || 0, image };
+  return { lines, text: text.replace(/(\w)- (\w)/g, '$1$2').trim(), box, confidence, image };
+}
+
+// ---------------------------------------------------------------- the dictionary
+
+// English words, commonest first (SCOWL, see words-en-COPYRIGHT.txt), letters only: word → rank.
+let dict = null;
+const SAID = 'dont youre im ive id isnt cant wont didnt doesnt its thats whats theres lets shes hes theyre weve youve wasnt arent werent couldnt wouldnt shouldnt havent hasnt hadnt youll shell theyll wed youd hed theyd whos wheres hows aint yall hmm huh eek uh um oh ah ugh mmm sec okay ok'.split(' ');
+
+async function loadDictionary() {
+  if (dict) return dict;
+  try {
+    const text = await (await fetch(BASE + 'words-en.txt')).text();
+    const m = new Map();
+    text.split('\n').forEach((w, i) => w && !m.has(w) && m.set(w, i));
+    for (const w of SAID) if (!m.has(w)) m.set(w, 0);
+    dict = m;
+  } catch (e) {
+    dict = null; // (read without it)
+  }
+  return dict;
+}
+
+// What the engine takes for what, in comic lettering.
+// (Only shapes that really look alike: a name such as "Roxy" mustn't become "foxy".)
+const CONFUSED = [['c', 'e'], ['e', 'c'], ['1', 'l'], ['1', 'i'], ['l', 'i'], ['i', 'l'], ['0', 'o'], ['rn', 'm'], ['m', 'rn'], ['vv', 'w'], ['ii', 'u'], ['cl', 'd'], ['li', 'h'], ['5', 's'], ['8', 'b']];
+
+/** A word as read, put right if it isn't a word and a likely confusion of a common one is. */
+export function fixWord(text) {
+  const m = /^([^A-Za-z0-9]*)([A-Za-z0-9]+)([^A-Za-z0-9]*)$/.exec(text);
+  if (!m || !dict) return text;
+  const core = m[2];
+  const key = core.toLowerCase();
+  if (key.length < 3 || dict.has(key) || /^\d+$/.test(key)) return text;
+  let best = null;
+  let rank = Infinity;
+  const tryWord = (cand) => {
+    const r = dict.get(cand);
+    if (r != null && r < rank && !/\d/.test(cand)) (best = cand), (rank = r);
+  };
+  const once = (word, f) => {
+    for (const [a, b] of CONFUSED) {
+      for (let i = word.indexOf(a); i >= 0; i = word.indexOf(a, i + 1)) f(word.slice(0, i) + b + word.slice(i + a.length));
+    }
+  };
+  once(key, (c1) => {
+    tryWord(c1);
+    if (key.length >= 4) once(c1, tryWord); // (two confusions in a longer word)
+  });
+  // A stray mark read as a thin letter at either end ("ithe", "you1").
+  if (!best && key.length >= 4) {
+    if (/^[il1]/.test(key)) tryWord(key.slice(1));
+    if (/[il1]$/.test(key)) tryWord(key.slice(0, -1));
+  }
+  if (!best) return text;
+  const cased = core === core.toUpperCase() ? best.toUpperCase() : /^[A-Z]/.test(core) ? best[0].toUpperCase() + best.slice(1) : best;
+  return m[1] + cased + m[3];
 }
 
 // Words that often follow "I" (to tell "ILEFT" from a word that starts with I).
@@ -987,6 +1066,9 @@ export function tidyWords(lines, lang) {
     }
     w.text = t;
   }
+  // Letters the engine confuses ("lcaving", "mcct", "WISC"): a word not in the dictionary becomes the
+  // commonest one a confusion or two away, if there is one (names, which aren't in it, stay).
+  if (dict) for (const w of all) w.text = fixWord(w.text);
   // A narrow "I" glued to the next word ("ILEFT"): split off when the rest is a common word.
   for (const w of all) {
     const m = /^I([A-Za-z]+)([^A-Za-z]*)$/.exec(w.text);
@@ -998,7 +1080,9 @@ export function tidyWords(lines, lang) {
     for (const w of all) {
       let t = w.text.toLowerCase();
       if (/^i(['’](m|ll|ve|d))?[^a-z]*$/.test(t)) t = 'I' + t.slice(1);
-      if (start) t = t.replace(/[a-z]/, (c) => c.toUpperCase());
+      // (A name, not in the dictionary, keeps its capital: "Roxy".)
+      const bare = t.replace(/[^a-z]/g, '');
+      if (start || (dict && bare.length >= 3 && !dict.has(bare) && /^[a-z]/.test(t.replace(/^[^a-z]+/, '')))) t = t.replace(/[a-z]/, (c) => c.toUpperCase());
       w.text = t;
       start = /[.!?…]["'”’)]*$/.test(t);
     }
@@ -1025,6 +1109,7 @@ export function tidy(raw, lang) {
  */
 export function readAt(img, { sx = 0, sw = img.naturalWidth || img.width, ix, iy, lang = 'en' }) {
   return queued(async () => {
+    if (lang === 'en') await loadDictionary();
     const ih = img.naturalHeight || img.height;
     const a = grayOf(img, sx, 0, sw, ih);
     const ax = Math.round((ix - sx) * a.k);
@@ -1057,6 +1142,7 @@ export function readAt(img, { sx = 0, sw = img.naturalWidth || img.width, ix, iy
  */
 export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang = 'en', rtl = false, rejected = null }, onProgress = () => {}) {
   return queued(async () => {
+    if (lang === 'en') await loadDictionary();
     const ih = img.naturalHeight || img.height;
     const a = grayOf(img, sx, 0, sw, ih);
     const found = findBubbles(a.g, a.w, a.h);
@@ -1094,7 +1180,9 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
     }
     onProgress(found.length, found.length);
     // (The panels too: read aloud, the view keeps the panel of the bubble being read in sight.)
-    return Object.assign(inReadingOrder(out, rtl), { panels: findPanels(a.g, a.w, a.h) });
+    const panels = findPanels(a.g, a.w, a.h);
+    const geo = { sx, sw, ih };
+    return Object.assign(inReadingOrder(out, rtl, panels, geo), { panels, geo });
   });
 }
 
@@ -1171,10 +1259,49 @@ async function sparseText(img, sx, sw, lh, taken) {
 }
 
 /**
+ * Reading order by panels: the panels in order (rows from the top, each row
+ * from the right in manga), and the bubbles of each panel in order within
+ * it. A bubble is in the panel holding most of it; one in no panel (in the
+ * gutter) counts as a panel of its own. panels: shares of the area read
+ * (geo: { sx, sw, ih } in picture pixels).
+ */
+function inPanelOrder(list, rtl, panels, geo) {
+  const boxes = panels.map((q) => ({ x: geo.sx + q.x0 * geo.sw, y: q.y0 * geo.ih, w: (q.x1 - q.x0) * geo.sw, h: (q.y1 - q.y0) * geo.ih, items: [] }));
+  const free = [];
+  for (const it of list) {
+    const b = it.box;
+    let best = null;
+    let most = b.w * b.h * 0.3;
+    for (const q of boxes) {
+      const ox = Math.min(b.x + b.w, q.x + q.w) - Math.max(b.x, q.x);
+      const oy = Math.min(b.y + b.h, q.y + q.h) - Math.max(b.y, q.y);
+      if (ox > 0 && oy > 0 && ox * oy > most) (most = ox * oy), (best = q);
+    }
+    if (best) best.items.push(it);
+    else free.push({ x: b.x, y: b.y, w: b.w, h: b.h, items: [it] });
+  }
+  const all = boxes.filter((q) => q.items.length).concat(free).sort((p, q) => p.y - q.y);
+  // Rows: a panel starting above the middle of the first panel of a row is in that row.
+  const rows = [];
+  for (const q of all) {
+    const row = rows.find((r) => q.y < r[0].y + r[0].h * 0.5 && q.y + q.h > r[0].y + r[0].h * 0.3);
+    if (row) row.push(q);
+    else rows.push([q]);
+  }
+  const out = [];
+  for (const r of rows) {
+    r.sort((p, q) => (rtl ? q.x + q.w - (p.x + p.w) : p.x - q.x));
+    for (const q of r) out.push(...inReadingOrder(q.items, rtl));
+  }
+  return out;
+}
+
+/**
  * Reading order: bubbles side by side (overlapping in height) form a row; rows
  * from the top; within a row from the left, or from the right in manga.
  */
-export function inReadingOrder(list, rtl) {
+export function inReadingOrder(list, rtl, panels = null, geo = null) {
+  if (panels && panels.length && geo) return inPanelOrder(list, rtl, panels, geo);
   const items = list.slice().sort((p, q) => p.box.y - q.box.y);
   const rows = [];
   for (const it of items) {

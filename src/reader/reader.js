@@ -2759,7 +2759,7 @@ class Reader {
     (this.panels || (this.panels = new Map())).set(n, list.panels || []);
     // Bubbles read by pressing on them that the page search missed stay too.
     const before = ((this.doc.ocr.get(n) || {}).bubbles || []).filter((b) => !list.some((x) => this.#overlaps(x.box, b.box)));
-    this.doc.setPageText(n, inReadingOrder(list.concat(before), this.rtl));
+    this.doc.setPageText(n, inReadingOrder(list.concat(before), this.rtl, list.panels, list.geo));
     await this.#refreshOcrLayers(n);
     if (this.readMode) this.#onSpeechState(this.speech.state); // the bar's own words again
   }
