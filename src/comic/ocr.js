@@ -826,7 +826,24 @@ function within(b, g, pad, w) {
       }
     }
   };
-  mark(keep, g.at);
+  // Whole lines of letters are kept, not just the marks found: a thin stroke (the "l" of "call", the
+  // dot of an "i", a fine serif) can be too faint to be a mark at the size the page is searched at.
+  if (g.ms && g.ms.length) {
+    const lines = [];
+    for (const m of g.ms.slice().sort((p, q) => p.y0 - q.y0)) {
+      const row = lines.find((w) => Math.min(w.y1, m.y1) - Math.max(w.y0, m.y0) > Math.min(w.y1 - w.y0, m.y1 - m.y0) * 0.4);
+      if (row) Object.assign(row, { x0: Math.min(row.x0, m.x0), x1: Math.max(row.x1, m.x1), y0: Math.min(row.y0, m.y0), y1: Math.max(row.y1, m.y1) });
+      else lines.push({ x0: m.x0, x1: m.x1, y0: m.y0, y1: m.y1 });
+    }
+    const size = g.letterSize || 10;
+    const px = Math.max(2, Math.round(size * 0.35));
+    const py = Math.max(2, Math.round(size * 0.3));
+    for (const l of lines) {
+      for (let y = Math.max(y0, l.y0 - py); y <= Math.min(y1, l.y1 + py); y++) {
+        for (let x = Math.max(x0, l.x0 - px); x <= Math.min(x1, l.x1 + px); x++) keep[(y - y0) * bw + (x - x0)] = 1;
+      }
+    }
+  } else mark(keep, g.at);
   const part = { x0, y0, x1, y1, rows, part: true, keep };
   // A tilted line, or one with stray marks beside it: another way to read it, set level, strays left out
   // (tried when the plain reading is unsure).
@@ -838,6 +855,9 @@ function within(b, g, pad, w) {
   }
   return part;
 }
+
+// Short words a bubble may hold all by itself.
+const ALONE = new Set('oh uh ah eh no go so um hm mm ok hi ha ow yo huh yes yay hey wow why'.split(' '));
 
 // Short things said, that count as words on their own.
 const SHORT = new Set('oh uh ah eh no go so um hm mm ok hi ha ow yo me we us he it is in on to do my by up i a o'.split(' '));
@@ -854,12 +874,12 @@ export function wordLike(r, lang) {
   // seldom sure of so few letters, but a sound people make is enough.
   if (r.levelled && lang === 'en') {
     const bare = words.map((w) => w.text.replace(/[^A-Za-z]/g, '').toLowerCase()).filter(Boolean);
-    if (bare.length && bare.length <= 2 && bare.every((t) => t.length >= 2 && (said(t) || SHORT.has(t))) && r.confidence >= 8) return true;
+    if (bare.length && bare.length <= 2 && bare.every((t) => t.length >= 2 && (said(t) || ALONE.has(t))) && r.confidence >= 8) return true;
   }
   // Stacked letters read as a word: the engine is seldom sure of them, but a real word or a sound is enough.
   if (r.stacked && lang === 'en') {
     const bare = r.text.replace(/[^A-Za-z]/g, '').toLowerCase();
-    return bare.length >= 2 && (said(bare) || (dict && dict.has(bare)));
+    return (bare.length >= 2 && said(bare)) || (bare.length >= 3 && dict && dict.has(bare) && r.confidence >= 20);
   }
   const text = words.map((w) => w.text).join(' ');
   const letters = text.replace(/[^\p{L}]/gu, '').length;
@@ -878,6 +898,8 @@ export function wordLike(r, lang) {
     // things people say ("Oh...", "Go!", "Uh...").
     const bare = words.map((w) => w.text.replace(/[^A-Za-z]/g, '').toLowerCase()).filter(Boolean);
     if (!bare.some((t) => t.length >= 3) && !bare.every((t) => SHORT.has(t) || said(t))) return false;
+    // One short word on its own ("WE.", "Me", "ANN" read off a drawing): only a word said on its own.
+    if (bare.length === 1 && bare[0].length <= 3 && !ALONE.has(bare[0]) && !said(bare[0])) return false;
     if (digits * 2 >= letters) return false;
   }
   return true;
@@ -1233,7 +1255,13 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja
   if (lang === 'en' && lines.some((l) => l.words.some((w) => w.conf >= 70))) {
     let dropped = false;
     for (const l of lines) {
-      const keep = l.words.filter((w) => { const t = w.text.replace(/[^A-Za-z]/g, '').toLowerCase(); return w.conf >= 25 || (w.conf >= 8 && (said(t) || /^[ia]$/.test(t))); }); // (a shout is often read unsurely)
+      // (A word, a name or a shout read unsurely is still a word: only scraps that are none of those go.)
+      const keep = l.words.filter((w) => {
+        const t = w.text.replace(/[^A-Za-z]/g, '').toLowerCase();
+        if (w.conf >= 25) return true;
+        if (w.conf < 8) return false;
+        return said(t) || /^[ia]$/.test(t) || (t.length >= 3 && ((dict && dict.has(t)) || (bookNames && bookNames.has(t)) || /^[A-Z][a-z]{3,}/.test(w.text.replace(/^[^A-Za-z]+/, ''))));
+      });
       if (keep.length < l.words.length) (dropped = true), (l.words = keep);
     }
     for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].words.length) lines.splice(i, 1);
@@ -1319,7 +1347,7 @@ function fixName(text) {
 
 // What the engine takes for what, in comic lettering.
 // (Only shapes that really look alike: a name such as "Roxy" mustn't become "foxy".)
-const CONFUSED = [['c', 'e'], ['e', 'c'], ['1', 'l'], ['1', 'i'], ['l', 'i'], ['i', 'l'], ['0', 'o'], ['rn', 'm'], ['m', 'rn'], ['vv', 'w'], ['ii', 'u'], ['cl', 'd'], ['li', 'h'], ['5', 's'], ['8', 'b'], ['v', 'y']];
+const CONFUSED = [['c', 'e'], ['e', 'c'], ['1', 'l'], ['1', 'i'], ['l', 'i'], ['i', 'l'], ['0', 'o'], ['rn', 'm'], ['m', 'rn'], ['vv', 'w'], ['ii', 'u'], ['cl', 'd'], ['li', 'h'], ['5', 's'], ['8', 'b'], ['v', 'y'], ['d', 'tl']];
 
 /** A word as read, put right if it isn't a word and a likely confusion of a common one is. */
 export function fixWord(text) {
@@ -1520,19 +1548,39 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
     if (lang === 'en') {
       const sizes = out.map((r) => r.lines.length && r.lines[0].words.length && r.lines[0].words[0].y1 - r.lines[0].words[0].y0).filter((x) => x > 0).sort((p, q) => p - q);
       const lh = sizes.length ? sizes[sizes.length >> 1] : 40;
+      const k = a.k;
+      const lhA = lh * k;
+      const page = { x0: 0, y0: 0, x1: a.w - 1, y1: a.h - 1, rows: null };
+      const blocks = [];
       for (const box of await sparseText(img, sx, sw, lh, out.map((r) => r.box))) {
-        const k = a.k;
-        let b = { x0: Math.max(0, Math.round((box.x - sx) * k)), y0: Math.max(0, Math.round(box.y * k)), x1: Math.min(a.w - 1, Math.round((box.x - sx + box.w) * k)), y1: Math.min(a.h - 1, Math.round((box.y + box.h) * k)), rows: null };
+        const b = { x0: Math.max(0, Math.round((box.x - sx) * k)), y0: Math.max(0, Math.round(box.y * k)), x1: Math.min(a.w - 1, Math.round((box.x - sx + box.w) * k)), y1: Math.min(a.h - 1, Math.round((box.y + box.h) * k)) };
         // The engine was sure of some of the words: the whole block of lettering around them is read
         // (the letters' lines and blocks, found near them).
-        const lhA = lh * k;
         const near = { x0: Math.max(0, Math.round(b.x0 - lhA * 4)), y0: Math.max(0, Math.round(b.y0 - lhA * 4)), x1: Math.min(a.w - 1, Math.round(b.x1 + lhA * 4)), y1: Math.min(a.h - 1, Math.round(b.y1 + lhA * 4)), rows: null };
         const mine = letterGroups(a.g, a.w, near, lhA).filter((g) => !(g.x1 < b.x0 || g.x0 > b.x1 || g.y1 < b.y0 || g.y0 > b.y1) && g.even >= 0.6);
-        if (mine.length) {
-          // Only those letters are read, not the picture around them (tone, clouds).
-          const u = { x0: Math.min(...mine.map((g) => g.x0)), y0: Math.min(...mine.map((g) => g.y0)), x1: Math.max(...mine.map((g) => g.x1)), y1: Math.max(...mine.map((g) => g.y1)), at: [].concat(...mine.map((g) => g.at)) };
-          b = within({ x0: 0, y0: 0, x1: a.w - 1, y1: a.h - 1, rows: null }, u, Math.max(3, Math.round(lhA * 0.6)), a.w);
+        const ms = [].concat(...mine.map((g) => g.ms || []));
+        blocks.push(mine.length ? { x0: Math.min(...mine.map((g) => g.x0)), y0: Math.min(...mine.map((g) => g.y0)), x1: Math.max(...mine.map((g) => g.x1)), y1: Math.max(...mine.map((g) => g.y1)), at: [].concat(...mine.map((g) => g.at)), ms, letterSize: lhA } : Object.assign(b, { rows: null, bare: true }));
+      }
+      // Blocks found from two places in the same lettering are one block.
+      const gap = lhA * 0.8;
+      for (let merged = true; merged; ) {
+        merged = false;
+        for (let x = 0; x < blocks.length && !merged; x++) {
+          for (let y = x + 1; y < blocks.length; y++) {
+            const p = blocks[x];
+            const q = blocks[y];
+            if (p.bare || q.bare || q.x0 > p.x1 + gap || p.x0 > q.x1 + gap || q.y0 > p.y1 + gap || p.y0 > q.y1 + gap) continue;
+            const seen = new Set(p.ms);
+            blocks[x] = { x0: Math.min(p.x0, q.x0), y0: Math.min(p.y0, q.y0), x1: Math.max(p.x1, q.x1), y1: Math.max(p.y1, q.y1), at: p.at.concat(q.at), ms: p.ms.concat(q.ms.filter((m) => !seen.has(m))), letterSize: lhA };
+            blocks.splice(y, 1);
+            merged = true;
+            break;
+          }
         }
+      }
+      for (const u of blocks) {
+        // Only the letters are read, not the picture around them (tone, clouds).
+        const b = u.bare ? u : within(page, u, Math.max(3, Math.round(lhA * 0.6)), a.w);
         const r = await readBest(img, a, sx, b, lang);
         if (wordLike(r, lang)) out.push(r);
         else if (rejected) rejected.push(r);
@@ -1542,6 +1590,30 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
     // (The panels too: read aloud, the view keeps the panel of the bubble being read in sight.)
     const panels = findPanels(a.g, a.w, a.h);
     const geo = { sx, sw, ih };
+    // The same words read twice (a bubble, and a larger area around it): the surer reading stays.
+    if (lang === 'en') {
+      const area = (r) => r.box.w * r.box.h;
+      const inside = (p, q) => {
+        const ox = Math.min(p.box.x + p.box.w, q.box.x + q.box.w) - Math.max(p.box.x, q.box.x);
+        const oy = Math.min(p.box.y + p.box.h, q.box.y + q.box.h) - Math.max(p.box.y, q.box.y);
+        return ox > 0 && oy > 0 ? (ox * oy) / Math.min(area(p), area(q)) : 0;
+      };
+      const same = (p, q) => {
+        const words = (r) => r.text.toLowerCase().replace(/[^a-z ]/g, '').split(' ').filter((x) => x.length >= 3);
+        const a = words(p);
+        const b = words(q);
+        const shared = a.filter((x) => b.includes(x)).length;
+        return shared >= Math.min(a.length, b.length) * 0.5 && shared >= 1;
+      };
+      for (let i = out.length - 1; i >= 0; i--) {
+        for (let j = 0; j < out.length; j++) {
+          if (i === j || !out[i] || !out[j] || inside(out[i], out[j]) < 0.6 || !same(out[i], out[j])) continue;
+          const drop = readingScore(out[i], lang) < readingScore(out[j], lang) ? i : j;
+          out.splice(drop, 1);
+          break;
+        }
+      }
+    }
     if (names && lang === 'en') learnNames(out, names);
     return Object.assign(inReadingOrder(out, rtl, panels, geo), { panels, geo });
   });
