@@ -57,7 +57,13 @@ function queued(fn) {
 // ---------------------------------------------------------------- finding bubbles
 
 // For testing: keep the picture each region was read from (res.image).
-export const debug = { images: false, trace: null };
+export const debug = { images: false, trace: null, stats: null };
+const timed = async (kind, job) => {
+  const t = performance.now();
+  const out = await job;
+  if (debug.stats) (debug.stats[kind] = debug.stats[kind] || [0, 0]), (debug.stats[kind][0] += 1), (debug.stats[kind][1] += performance.now() - t);
+  return out;
+};
 
 const LIGHT = 200;
 const DARK = 120;
@@ -1048,7 +1054,7 @@ async function readStack(img, a, sx, g, glyphs, lang) {
   ctx.putImageData(d, 0, 0);
   const worker = await workerFor(lang);
   await worker.setParameters({ tessedit_pageseg_mode: '7', preserve_interword_spaces: '0', user_defined_dpi: '300', tessedit_char_blacklist: '|{}[]<>@#$%^&*_=+~`\\' });
-  const { data } = await worker.recognize(c, {}, { text: true, blocks: true });
+  const { data } = await timed('stack', worker.recognize(c, {}, { text: true, blocks: true }));
   const image = debug.images ? c.toDataURL() : undefined;
   c.width = c.height = 0;
   const text = (data.text || '').replace(/\s+/g, '').trim();
@@ -1069,7 +1075,8 @@ async function readStack(img, a, sx, g, glyphs, lang) {
 async function readBest(img, a, sx, b, lang) {
   const first = await readRegion(img, a, sx, b, lang, 34);
   const words = first.lines.reduce((n, l) => n.concat(l.words), []);
-  if (lang !== 'en' || (first.confidence >= 85 && words.every((w) => w.conf >= 70))) return first;
+  // (Sure enough already: no more looks, they take time.)
+  if (lang !== 'en' || (first.confidence >= 80 && words.every((w) => w.conf >= 55) && wordLike(first, lang))) return first;
   const tries = [first];
   // A tilted line (a shout), or one with bits of outline beside it: set level, just its letters.
   if (b.alt) {
@@ -1191,7 +1198,7 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja
     user_defined_dpi: '300',
     tessedit_char_blacklist: lang === 'en' ? '|{}[]<>@#$%^&*_=+~`\\' : '',
   });
-  const { data } = await worker.recognize(page, {}, { text: true, blocks: true });
+  const { data } = await timed('region', worker.recognize(page, {}, { text: true, blocks: true }));
   const image = debug.images ? page.toDataURL() : undefined;
   c.width = c.height = 0;
   page.width = page.height = 0;
@@ -1476,14 +1483,15 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
  */
 async function sparseText(img, sx, sw, lh, taken) {
   const ih = img.naturalHeight || img.height;
-  const scale = Math.max(0.3, Math.min(1.5, 34 / Math.max(8, lh)));
+  // (Only finding where words are: smaller letters do, and the engine is much quicker on a smaller page.)
+  const scale = Math.max(0.3, Math.min(0.8, 24 / Math.max(8, lh)));
   const c = document.createElement('canvas');
   c.width = Math.round(sw * scale);
   c.height = Math.round(ih * scale);
   c.getContext('2d').drawImage(img, sx, 0, sw, ih, 0, 0, c.width, c.height);
   const worker = await workerFor('en');
   await worker.setParameters({ tessedit_pageseg_mode: '11', user_defined_dpi: '300', tessedit_char_blacklist: '|{}[]<>@#$%^&*_=+~`\\' });
-  const { data } = await worker.recognize(c, {}, { blocks: true });
+  const { data } = await timed('sparse', worker.recognize(c, {}, { blocks: true }));
   c.width = c.height = 0;
   const words = [];
   for (const bl of data.blocks || []) {
