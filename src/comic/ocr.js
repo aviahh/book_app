@@ -1267,6 +1267,56 @@ async function loadDictionary() {
   return dict;
 }
 
+// ---------------------------------------------------------------- the book's own names
+
+// Words of the book being read that aren't English (names: "Roxy", "Migurd"), with how often they
+// were read surely: word (letters, lower case) → count. Kept by the reader for each book.
+let bookNames = null;
+
+/** Note the names in what was read surely. */
+function learnNames(results, names) {
+  for (const r of results) {
+    for (const l of r.lines) {
+      for (const w of l.words) {
+        const bare = w.text.replace(/[^A-Za-z]/g, '').toLowerCase();
+        if (w.conf >= 80 && bare.length >= 4 && !dict.has(bare) && !said(bare) && /^[A-Za-z][a-z'’]*[A-Za-z]?[^A-Za-z]*$|^[A-Z][A-Z'’]+[^A-Za-z]*$/.test(w.text.replace(/^[^A-Za-z]+/, ''))) names.set(bare, (names.get(bare) || 0) + 1);
+      }
+    }
+  }
+}
+
+/** Letters apart: how many letters to change, add or drop to make one word the other. */
+function distance(a, b) {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const t = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = t;
+    }
+  }
+  return d[b.length];
+}
+
+/** A word that is nearly one of the book's names (read twice or more), as that name. */
+function fixName(text) {
+  const m = /^([^A-Za-z]*)([A-Za-z/|!1]+)([^A-Za-z]*)$/.exec(text);
+  if (!m) return text;
+  const bare = m[2].replace(/[^A-Za-z]/g, '').toLowerCase();
+  if (bare.length < 3 || dict.has(bare) || said(bare) || bookNames.has(bare)) return text;
+  let best = null;
+  for (const [name, n] of bookNames) {
+    if (n < 2 || Math.abs(name.length - m[2].length) > 2) continue;
+    const d = distance(m[2].toLowerCase(), name);
+    if (d <= (name.length >= 6 ? 2 : 1) && (!best || d < best.d || (d === best.d && n > best.n))) best = { name, d, n };
+  }
+  if (!best) return text;
+  const name = m[2] === m[2].toUpperCase() ? best.name.toUpperCase() : best.name[0].toUpperCase() + best.name.slice(1);
+  return m[1] + name + m[3];
+}
+
 // What the engine takes for what, in comic lettering.
 // (Only shapes that really look alike: a name such as "Roxy" mustn't become "foxy".)
 const CONFUSED = [['c', 'e'], ['e', 'c'], ['1', 'l'], ['1', 'i'], ['l', 'i'], ['i', 'l'], ['0', 'o'], ['rn', 'm'], ['m', 'rn'], ['vv', 'w'], ['ii', 'u'], ['cl', 'd'], ['li', 'h'], ['5', 's'], ['8', 'b']];
@@ -1337,6 +1387,21 @@ export function tidyWords(lines, lang) {
   // Letters the engine confuses ("lcaving", "mcct", "WISC"): a word not in the dictionary becomes the
   // commonest one a confusion or two away, if there is one (names, which aren't in it, stay).
   if (dict) for (const w of all) w.text = fixWord(w.text);
+  // A name of this book read slightly wrong ("M/glurd", "Mygurd" for "Migurd"): the name.
+  if (dict && bookNames) for (const w of all) w.text = fixName(w.text);
+  // A number among words, where lettering has no numbers ("It's not 100 late", "years 450"): the
+  // commonest word its figures could be read as.
+  if (dict && all.filter((w) => /[A-Za-z]{2,}/.test(w.text)).length >= 2 && all.filter((w) => /\d/.test(w.text)).length === 1) {
+    for (const w of all) {
+      const m = /^(\d{2,4})([.,!?…'’"”]*)$/.exec(w.text);
+      if (!m) continue;
+      const LOOKS = { 0: 'o', 1: 'lit', 3: 'e', 4: 'a', 5: 'sg', 6: 'b', 7: 't', 8: 'b', 9: 'g', 2: 'z' };
+      let words = [''];
+      for (const d of m[1]) words = [].concat(...words.map((p) => (LOOKS[d] || '').split('').map((c) => p + c)));
+      const best = words.filter((x) => dict.has(x)).sort((p, q) => dict.get(p) - dict.get(q))[0];
+      if (best && dict.get(best) < 5000) w.text = best + m[2];
+    }
+  }
   // A narrow "I" glued to the next word ("ILEFT"): split off when the rest is a common word.
   for (const w of all) {
     const m = /^I([A-Za-z]+)([^A-Za-z]*)$/.exec(w.text);
@@ -1386,9 +1451,10 @@ export function tidy(raw, lang) {
  * sx..sx+sw it shows). lang: 'en' | 'ja' | 'ja-v'.
  * Returns { text, lines, box (picture pixels), bubble: whether a bubble was found }.
  */
-export function readAt(img, { sx = 0, sw = img.naturalWidth || img.width, ix, iy, lang = 'en' }) {
+export function readAt(img, { sx = 0, sw = img.naturalWidth || img.width, ix, iy, lang = 'en', names = null }) {
   return queued(async () => {
     if (lang === 'en') await loadDictionary();
+    bookNames = names;
     const ih = img.naturalHeight || img.height;
     const a = grayOf(img, sx, 0, sw, ih);
     const ax = Math.round((ix - sx) * a.k);
@@ -1419,9 +1485,10 @@ export function readAt(img, { sx = 0, sw = img.naturalWidth || img.width, ix, iy
  * All the bubbles of a page, read, in reading order: [{ box, lines, text }].
  * rtl: manga (right to left). onProgress(done, total) as it goes.
  */
-export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang = 'en', rtl = false, rejected = null }, onProgress = () => {}) {
+export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang = 'en', rtl = false, rejected = null, names = null }, onProgress = () => {}) {
   return queued(async () => {
     if (lang === 'en') await loadDictionary();
+    bookNames = names;
     const ih = img.naturalHeight || img.height;
     const a = grayOf(img, sx, 0, sw, ih);
     const found = findBubbles(a.g, a.w, a.h);
@@ -1471,6 +1538,7 @@ export function readPage(img, { sx = 0, sw = img.naturalWidth || img.width, lang
     // (The panels too: read aloud, the view keeps the panel of the bubble being read in sight.)
     const panels = findPanels(a.g, a.w, a.h);
     const geo = { sx, sw, ih };
+    if (names && lang === 'en') learnNames(out, names);
     return Object.assign(inReadingOrder(out, rtl, panels, geo), { panels, geo });
   });
 }

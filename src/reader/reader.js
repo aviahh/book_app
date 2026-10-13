@@ -2693,7 +2693,7 @@ class Reader {
     this.#renderPopup(point, { word: '', loading: true, ocr: { lang, status: this.ocrReady ? 'Reading the bubble…' : 'Getting text recognition ready…' } });
     let res;
     try {
-      res = await readAt(src.img, { sx: src.sx, sw: src.sw, ix, iy, lang });
+      res = await readAt(src.img, { sx: src.sx, sw: src.sw, ix, iy, lang, names: this.doc.names || (this.doc.names = new Map()) });
       this.ocrReady = true;
     } catch (e) {
       console.warn('text recognition', e);
@@ -2770,7 +2770,7 @@ class Reader {
     note(this.ocrReady ? 'Finding the words on the page…' : 'Getting text recognition ready…');
     let list;
     try {
-      list = await readPage(src.img, { sx: src.sx, sw: src.sw, lang: this.#ocrLang(), rtl: this.rtl }, (done, total) => total && note(`Reading the bubbles… ${done} of ${total}`));
+      list = await readPage(src.img, { sx: src.sx, sw: src.sw, lang: this.#ocrLang(), rtl: this.rtl, names: this.doc.names || (this.doc.names = new Map()) }, (done, total) => total && note(`Reading the bubbles… ${done} of ${total}`));
       this.ocrReady = true;
     } catch (e) {
       console.warn('text recognition', e);
