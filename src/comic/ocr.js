@@ -1075,8 +1075,7 @@ async function readStack(img, a, sx, g, glyphs, lang) {
 async function readBest(img, a, sx, b, lang) {
   const first = await readRegion(img, a, sx, b, lang, 34);
   const words = first.lines.reduce((n, l) => n.concat(l.words), []);
-  // (Sure enough already: no more looks, they take time.)
-  if (lang !== 'en' || (first.confidence >= 80 && words.every((w) => w.conf >= 55) && wordLike(first, lang))) return first;
+  if (lang !== 'en' || (first.confidence >= 85 && words.every((w) => w.conf >= 70))) return first;
   const tries = [first];
   // A tilted line (a shout), or one with bits of outline beside it: set level, just its letters.
   if (b.alt) {
@@ -1234,7 +1233,7 @@ async function readRegion(img, a, sx, b, lang, letterPx = 34, psm = lang === 'ja
   if (lang === 'en' && lines.some((l) => l.words.some((w) => w.conf >= 70))) {
     let dropped = false;
     for (const l of lines) {
-      const keep = l.words.filter((w) => w.conf >= 25 || (w.conf >= 8 && said(w.text.replace(/[^A-Za-z]/g, '').toLowerCase()))); // (a shout is often read unsurely)
+      const keep = l.words.filter((w) => { const t = w.text.replace(/[^A-Za-z]/g, '').toLowerCase(); return w.conf >= 25 || (w.conf >= 8 && (said(t) || /^[ia]$/.test(t))); }); // (a shout is often read unsurely)
       if (keep.length < l.words.length) (dropped = true), (l.words = keep);
     }
     for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].words.length) lines.splice(i, 1);
