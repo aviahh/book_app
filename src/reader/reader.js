@@ -2067,6 +2067,7 @@ class Reader {
       this.ptr = null;
       clearTimeout(this.tapTimer);
       this.lastTap = null;
+      this.#stopEdgeScroll();
       return this.#pinchStart();
     }
     if (this.pointers.size > 1) return;
@@ -2101,6 +2102,7 @@ class Reader {
 
   /** Forget every finger on the screen (and any gesture in progress). */
   #resetPointers() {
+    this.#stopEdgeScroll();
     this.pointers.clear();
     this.pinch = null;
     this.ptr = null;
@@ -2201,7 +2203,12 @@ class Reader {
     if (this.pinch) return this.#pinchMove();
     const ptr = this.ptr;
     if (!ptr || e.pointerId !== ptr.id) return;
-    if (ptr.pressed) return this.#extendFromPress(e, ptr, p);
+    if (ptr.pressed) {
+      this.#extendFromPress(e, ptr, p);
+      // Near the edge of the screen the view scrolls on, so the selection can grow past it.
+      if (ptr.extended) this.#edgeScroll(e.clientX, e.clientY, (x, y) => this.ptr === ptr && this.#extendFromPress({ clientX: x, clientY: y }, ptr, p));
+      return;
+    }
     if (ptr.dismiss) {
       if (Math.hypot(p.x - ptr.x0, p.y - ptr.y0) > MOVE_SLOP) this.#dismissPopup(ptr);
       return;
@@ -2303,6 +2310,7 @@ class Reader {
     if (!ptr || e.pointerId !== ptr.id) return;
     this.ptr = null;
     clearTimeout(this.pressTimer);
+    this.#stopEdgeScroll();
     if (ptr.pressed) {
       // The hold already translated; if the finger then dragged, translate the grown selection.
       if (ptr.extended && !cancelled) {
@@ -2910,6 +2918,50 @@ class Reader {
     hs.hidden = he.hidden = false;
   }
 
+  /**
+   * While a selection is being dragged out, a finger near an edge of the screen scrolls the view
+   * that way (faster the nearer the edge), and the selection follows on to what comes into view.
+   * Each move of the finger updates where it is; `step(x, y)` grows the selection after each scroll.
+   */
+  #edgeScroll(x, y, step) {
+    const p = this.#local({ clientX: x, clientY: y });
+    const W = this.camera.W || this.W;
+    const H = this.camera.H || this.H;
+    const zone = Math.max(36, Math.min(72, Math.min(W, H) * 0.1));
+    // How hard to push each way: 0 outside the zone, 1 at (or nearly at) the edge.
+    const push = (d) => Math.max(0, Math.min(1, (zone - d) / (zone * 0.8)));
+    const vx = push(p.x) - push(W - p.x);
+    const vy = push(p.y) - push(H - p.y);
+    if (!vx && !vy) return this.#stopEdgeScroll();
+    const es = this.edgeScrolling || (this.edgeScrolling = {});
+    Object.assign(es, { x, y, step, vx, vy });
+    if (es.raf) return;
+    let last = performance.now();
+    const frame = (now) => {
+      const dt = Math.min(48, now - last) / 16.7;
+      last = now;
+      // (Speed eases in: slow at the zone's edge, up to about a screen a second at the very edge.)
+      const v = (k) => Math.sign(k) * k * k * Math.max(W, H) * 0.017 * dt;
+      const cam = this.camera;
+      cam.stop();
+      const moved = cam.panBy(v(es.vx), v(es.vy));
+      if (moved) {
+        cam.flush();
+        this.userMovedAt = now;
+        es.step(es.x, es.y);
+        if (this.wordSel && this.handles) this.#placeHandles(rangeRects(this.wordSel.spans, this.wordSel.a, this.wordSel.b));
+      }
+      es.raf = requestAnimationFrame(frame);
+    };
+    es.raf = requestAnimationFrame(frame);
+  }
+
+  #stopEdgeScroll() {
+    const es = this.edgeScrolling;
+    if (es && es.raf) cancelAnimationFrame(es.raf);
+    this.edgeScrolling = null;
+  }
+
   #hideHandles() {
     if (this.handles) for (const h of this.handles) h.hidden = true;
     this.handleDrag = null;
@@ -2930,6 +2982,7 @@ class Reader {
     const d = this.handleDrag;
     if (!d || e.pointerId !== d.id) return;
     const sel = this.wordSel;
+    this.#edgeScroll(e.clientX, e.clientY, (x, y) => this.handleDrag === d && this.#handleMove({ pointerId: d.id, clientX: x, clientY: y, scrolled: true }));
     const pos = hitTest(sel.spans, e.clientX, e.clientY + d.dy, { mode: 'char', maxDist: 40 });
     const w = pos && selectableAt(sel.spans, pos);
     if (!w) return;
@@ -2949,6 +3002,7 @@ class Reader {
     const d = this.handleDrag;
     if (!d || e.pointerId !== d.id) return;
     this.handleDrag = null;
+    this.#stopEdgeScroll();
     this.pop.classList.remove('adjusting');
     if (d.changed) this.#translateSelection();
     else this.#armPopupClose();
@@ -3688,6 +3742,7 @@ class Reader {
   }
 
   destroy({ staying = false } = {}) {
+    this.#stopEdgeScroll();
     clearTimeout(this.hideTimer);
     clearTimeout(this.arrowTimer);
     clearTimeout(this.tapTimer);
