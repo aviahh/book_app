@@ -12,6 +12,7 @@
 
 import { handleSync } from './sync.js';
 import { handleFetch } from './fetch.js';
+import { secMsGecV2 } from './gec.js';
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 const CHROMIUM_FULL_VERSION = '143.0.3650.75';
@@ -21,16 +22,7 @@ const MAX_TEXT = 3000;
 const VOICE_RE = /^[a-z]{2,3}-[A-Z]{2,4}(-[A-Za-z]+)?-[A-Za-z]+Neural$/;
 const RATE_RE = /^[+-]\d{1,3}%$/;
 
-const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const uuid = () => crypto.randomUUID().replaceAll('-', '');
-
-/** Sec-MS-GEC: SHA-256 of (Windows file time rounded down to 5 minutes) + token. */
-async function secMsGec() {
-  let secs = Math.floor(Date.now() / 1000) + 11644473600;
-  secs -= secs % 300;
-  const ticks = (BigInt(secs) * 10_000_000n).toString();
-  return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ticks + TRUSTED_CLIENT_TOKEN))).toUpperCase();
-}
 
 const jsDate = () => new Date().toUTCString().replace('GMT', 'GMT+0000 (Coordinated Universal Time)');
 
@@ -64,7 +56,7 @@ async function tts(text, voice, rate) {
 async function attempt(text, voice, rate) {
   const url =
     `${WSS_BASE}?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&ConnectionId=${uuid()}` +
-    `&Sec-MS-GEC=${await secMsGec()}&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}`;
+    `&Sec-MS-GEC=${secMsGecV2(TRUSTED_CLIENT_TOKEN)}&Sec-MS-GEC-Version=2-${CHROMIUM_FULL_VERSION}`;
   const upstream = await fetch(url, {
     headers: {
       Upgrade: 'websocket',
